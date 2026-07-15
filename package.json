@@ -1,0 +1,76 @@
+{
+  "name": "pi-mind-queue",
+  "version": "0.1.0",
+  "description": "A durable, project-wide thought queue for Pi sessions.",
+  "type": "module",
+  "main": "index.ts",
+  "files": [
+    "index.ts",
+    "component.ts",
+    "migration.ts",
+    "store.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "mind-queue",
+    "productivity",
+    "developer-tools"
+  ],
+  "author": {
+    "name": "Sanif",
+    "email": "sanifss@gmail.com"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sanif/pi-mind-queue.git"
+  },
+  "homepage": "https://github.com/sanif/pi-mind-queue#readme",
+  "bugs": {
+    "url": "https://github.com/sanif/pi-mind-queue/issues"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "packageManager": "bun@1.3.14",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "pack:check": "bun pm pack --dry-run",
+    "verify": "bun run typecheck && bun test && bun run pack:check",
+    "prepublishOnly": "bun run verify"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.7",
+    "@earendil-works/pi-tui": "0.80.7",
+    "@types/bun": "^1.3.14",
+    "typescript": "^5.9.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
