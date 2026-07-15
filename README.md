@@ -16,7 +16,7 @@ From GitHub:
 pi install git:github.com/sanif/pi-mind-queue@v0.1.0
 ```
 
-Restart Pi or run `/reload`, then open Mind Queue with `/mind`.
+Restart Pi or run `/reload`, then open Mind Queue with `/mind` or `Ctrl+Shift+M`.
 
 If you previously installed a local development copy at `~/.pi/agent/extensions/mind-queue`, remove or rename that directory before installing the package. Loading both copies registers duplicate commands and shortcuts.
 
