@@ -11,16 +11,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
-- Capture a thought immediately with `/mind <thought>`, including while the
-  agent is working.
-- Package-level coverage that verifies direct command capture after install.
-
-### Changed
-
-- Clarified that direct capture updates only the local project queue and does
-  not interrupt the agent or send the command to the model.
-- Changed the recommended npm and Git install commands to omit version suffixes;
-  npm resolves its `latest` stable dist-tag and Git follows the default branch.
+- Capture a thought immediately with `/mind <thought>` while the agent is
+  working, without interrupting the active turn or sending the command to the
+  model.
 
 ## [0.1.0] - 2026-07-15
 
