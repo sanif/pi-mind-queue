@@ -1,6 +1,6 @@
 {
   "name": "pi-mind-queue",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A durable, project-wide thought queue for Pi sessions.",
   "type": "module",
   "main": "index.ts",
@@ -10,6 +10,7 @@
     "migration.ts",
     "store.ts",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "keywords": [

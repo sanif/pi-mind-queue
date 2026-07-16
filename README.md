@@ -4,16 +4,16 @@ Mind Queue is a project-wide scratchpad for thoughts you do not want to lose whi
 
 ## Install
 
-From npm:
+From npm (latest stable release):
 
 ```bash
-pi install npm:pi-mind-queue@0.1.0
+pi install npm:pi-mind-queue
 ```
 
-From GitHub:
+From GitHub (default branch):
 
 ```bash
-pi install git:github.com/sanif/pi-mind-queue@v0.1.0
+pi install git:github.com/sanif/pi-mind-queue
 ```
 
 Restart Pi or run `/reload`, then open Mind Queue with `/mind` or `Ctrl+Shift+M`.
@@ -26,7 +26,8 @@ If you previously installed a local development copy at `~/.pi/agent/extensions/
 | --- | --- |
 | Open or close | `Ctrl+Shift+M` |
 | Open by command | `/mind` |
-| Add a thought | `A` |
+| Add while Pi is working | `/mind <thought>` |
+| Add from the queue | `A` |
 | Edit in Pi's multiline editor | `E` |
 | View the complete thought | `V` |
 | Move the thought to Pi's editor | `Enter` |
@@ -35,6 +36,10 @@ If you previously installed a local development copy at `~/.pi/agent/extensions/
 | Undo this session's latest change | `U` or `/mind-undo` |
 | Move selection | arrow keys or `J`/`K` |
 | Close | `Esc` |
+
+`/mind <thought>` saves immediately, including while the agent is working.
+It does not interrupt the agent or send the command to the model; it only
+updates the local project queue.
 
 Moving a thought removes it from the queue and inserts it at the current Pi editor cursor. `U` restores both the queue entry and the inserted editor text when the editor has not changed around that insertion.
 
@@ -64,7 +69,7 @@ Older session-local Mind Queue snapshots are imported once when a project store 
 ## Requirements
 
 - Pi with Node.js `>=22.19.0`.
-- Interactive TUI mode for `/mind` and the shortcut.
+- Interactive TUI mode for the `/mind` overlay and shortcut.
 - macOS with `/usr/bin/lockf`, or Linux with `flock` in `/usr/bin`, `/bin`, or `/usr/local/bin`.
 
 Mind Queue fails safely with an actionable error when no supported kernel lock utility is available. Windows is not currently supported.

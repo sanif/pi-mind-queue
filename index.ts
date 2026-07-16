@@ -13,7 +13,11 @@ import {
 	TodoManagerComponent,
 	type DialogResult,
 } from "./component";
-import { collectLegacyTodos, collectSessionOrigins, type SessionCatalog } from "./migration";
+import {
+	collectLegacyTodos,
+	collectSessionOrigins,
+	type SessionCatalog,
+} from "./migration";
 import {
 	cloneTodos,
 	cloneUndo,
@@ -49,7 +53,8 @@ function sessionOrigin(ctx: ExtensionContext): SessionOrigin {
 		id: ctx.sessionManager.getSessionId(),
 		name: normalizeSessionLabel(ctx.sessionManager.getSessionName()),
 		description: firstUserPrompt(ctx),
-		createdAt: ctx.sessionManager.getHeader()?.timestamp ?? new Date().toISOString(),
+		createdAt:
+			ctx.sessionManager.getHeader()?.timestamp ?? new Date().toISOString(),
 		persisted: ctx.sessionManager.getSessionFile() !== undefined,
 	};
 }
@@ -59,7 +64,10 @@ class MutationUnavailableError extends Error {}
 
 export default function mindQueue(pi: ExtensionAPI) {
 	const sessionCatalog: SessionCatalog = {
-		listAll: (sessionDir) => sessionDir ? SessionManager.listAll(sessionDir) : SessionManager.listAll(),
+		listAll: (sessionDir) =>
+			sessionDir
+				? SessionManager.listAll(sessionDir)
+				: SessionManager.listAll(),
 		open: (path) => SessionManager.open(path),
 	};
 	let store: MindQueueStore | undefined;
@@ -76,7 +84,10 @@ export default function mindQueue(pi: ExtensionAPI) {
 		);
 	};
 
-	const applyState = (nextState: ProjectQueueState, ctx: ExtensionContext): void => {
+	const applyState = (
+		nextState: ProjectQueueState,
+		ctx: ExtensionContext,
+	): void => {
 		state = nextState;
 		updateStatus(ctx);
 	};
@@ -87,7 +98,9 @@ export default function mindQueue(pi: ExtensionAPI) {
 	): void => {
 		const updateTodo = (todo: ProjectTodo): void => {
 			todo.createdIn.name = normalizeSessionLabel(todo.createdIn.name);
-			todo.createdIn.description = normalizeSessionLabel(todo.createdIn.description);
+			todo.createdIn.description = normalizeSessionLabel(
+				todo.createdIn.description,
+			);
 			const origin = origins.get(todo.createdIn.id);
 			if (!origin) return;
 			todo.createdIn.name = normalizeSessionLabel(origin.name);
@@ -104,7 +117,11 @@ export default function mindQueue(pi: ExtensionAPI) {
 		const nextStore = new MindQueueStore(projectRoot, getAgentDir());
 		const imported = existsSync(nextStore.filePath)
 			? []
-			: await collectLegacyTodos(projectRoot, sessionCatalog, ctx.sessionManager.getSessionDir());
+			: await collectLegacyTodos(
+					projectRoot,
+					sessionCatalog,
+					ctx.sessionManager.getSessionDir(),
+				);
 		const result = nextStore.initialize(imported);
 		store = nextStore;
 		let initializedState = result.state;
@@ -115,19 +132,26 @@ export default function mindQueue(pi: ExtensionAPI) {
 					sessionCatalog,
 					ctx.sessionManager.getSessionDir(),
 				);
-				const originsById = new Map(origins.map((origin) => [origin.id, origin]));
+				const originsById = new Map(
+					origins.map((origin) => [origin.id, origin]),
+				);
 				initializedState = nextStore.update((draft) => {
 					updateOriginMetadata(draft, originsById);
 					draft.sessionLabelsVersion = 2;
 				});
 			} catch (error) {
-				ctx.ui.notify(`Mind Queue could not enrich old session labels: ${(error as Error).message}`, "warning");
+				ctx.ui.notify(
+					`Mind Queue could not enrich old session labels: ${(error as Error).message}`,
+					"warning",
+				);
 			}
 		}
 		applyState(initializedState, ctx);
 
 		if (result.importedCount > 0) {
-			const sessionCount = new Set(result.state.todos.map((todo) => todo.createdIn.id)).size;
+			const sessionCount = new Set(
+				result.state.todos.map((todo) => todo.createdIn.id),
+			).size;
 			ctx.ui.notify(
 				`Mind Queue migrated ${result.importedCount} thought${result.importedCount === 1 ? "" : "s"} from ${sessionCount} session${sessionCount === 1 ? "" : "s"}`,
 				"info",
@@ -141,7 +165,10 @@ export default function mindQueue(pi: ExtensionAPI) {
 			await initialize(ctx);
 			return true;
 		} catch (error) {
-			ctx.ui.notify(`Mind Queue could not open its project store: ${(error as Error).message}`, "error");
+			ctx.ui.notify(
+				`Mind Queue could not open its project store: ${(error as Error).message}`,
+				"error",
+			);
 			return false;
 		}
 	};
@@ -152,7 +179,10 @@ export default function mindQueue(pi: ExtensionAPI) {
 			applyState(store.load(), ctx);
 			return true;
 		} catch (error) {
-			ctx.ui.notify(`Mind Queue could not read its project store: ${(error as Error).message}`, "error");
+			ctx.ui.notify(
+				`Mind Queue could not read its project store: ${(error as Error).message}`,
+				"error",
+			);
 			return false;
 		}
 	};
@@ -163,14 +193,22 @@ export default function mindQueue(pi: ExtensionAPI) {
 			latest.name !== currentOrigin?.name ||
 			latest.description !== currentOrigin?.description;
 		currentOrigin = latest;
-		if (!changed || !store || !state?.todos.some((todo) => todo.createdIn.id === latest.id)) return;
+		if (
+			!changed ||
+			!store ||
+			!state?.todos.some((todo) => todo.createdIn.id === latest.id)
+		)
+			return;
 		try {
 			const nextState = store.update((draft) => {
 				updateOriginMetadata(draft, new Map([[latest.id, latest]]));
 			});
 			applyState(nextState, ctx);
 		} catch (error) {
-			ctx.ui.notify(`Mind Queue could not refresh this session label: ${(error as Error).message}`, "warning");
+			ctx.ui.notify(
+				`Mind Queue could not refresh this session label: ${(error as Error).message}`,
+				"warning",
+			);
 		}
 	};
 
@@ -190,7 +228,10 @@ export default function mindQueue(pi: ExtensionAPI) {
 					nextId: draft.nextId,
 					todos: cloneTodos(draft.todos),
 				};
-				if (!change(draft, origin)) throw new MutationUnavailableError("Thought changed in another session");
+				if (!change(draft, origin))
+					throw new MutationUnavailableError(
+						"Thought changed in another session",
+					);
 				draft.undo = undo;
 			});
 			applyState(nextState, ctx);
@@ -199,15 +240,31 @@ export default function mindQueue(pi: ExtensionAPI) {
 			if (error instanceof MutationUnavailableError) {
 				ctx.ui.notify(`${error.message}; queue refreshed`, "info");
 			} else {
-				ctx.ui.notify(`Mind Queue could not save: ${(error as Error).message}`, "error");
+				ctx.ui.notify(
+					`Mind Queue could not save: ${(error as Error).message}`,
+					"error",
+				);
 			}
 			refresh(ctx);
 			return false;
 		}
 	};
 
+	const addThought = (ctx: ExtensionContext, text: string): boolean =>
+		mutate(ctx, "add", (draft, createdIn) => {
+			draft.todos.push({
+				id: draft.nextId++,
+				text,
+				done: false,
+				createdAt: new Date().toISOString(),
+				createdIn,
+			});
+			return true;
+		});
+
 	const getUndoLabel = (): string | undefined => {
-		if (!state?.undo || state.undo.actorSessionId !== currentOrigin?.id) return undefined;
+		if (!state?.undo || state.undo.actorSessionId !== currentOrigin?.id)
+			return undefined;
 		return state.undo.label;
 	};
 
@@ -231,7 +288,10 @@ export default function mindQueue(pi: ExtensionAPI) {
 				refresh(ctx);
 				return false;
 			}
-			ctx.ui.notify(`Mind Queue could not undo: ${(error as Error).message}`, "error");
+			ctx.ui.notify(
+				`Mind Queue could not undo: ${(error as Error).message}`,
+				"error",
+			);
 			refresh(ctx);
 			return false;
 		}
@@ -241,22 +301,31 @@ export default function mindQueue(pi: ExtensionAPI) {
 			const { position, text } = previous.editorInsertion;
 			const editorText = ctx.ui.getEditorText();
 			if (editorText.slice(position, position + text.length) === text) {
-				ctx.ui.setEditorText(editorText.slice(0, position) + editorText.slice(position + text.length));
+				ctx.ui.setEditorText(
+					editorText.slice(0, position) +
+						editorText.slice(position + text.length),
+				);
 				editorRestored = true;
 			}
 		}
 
 		if (previous) {
-			const suffix = previous.label === "move" && !editorRestored
-				? "; editor changed, so its text was left untouched"
-				: "";
+			const suffix =
+				previous.label === "move" && !editorRestored
+					? "; editor changed, so its text was left untouched"
+					: "";
 			ctx.ui.notify(`Undid ${previous.label}${suffix}`, "info");
 		}
 		return true;
 	};
 
 	const moveToEditor = (ctx: ExtensionContext, text: string): void => {
-		if (!store || !state?.undo || state.undo.actorSessionId !== currentOrigin?.id) return;
+		if (
+			!store ||
+			!state?.undo ||
+			state.undo.actorSessionId !== currentOrigin?.id
+		)
+			return;
 		const operationId = state.undo.operationId;
 		const safeText = sanitizeThoughtForEditor(text);
 		const before = ctx.ui.getEditorText();
@@ -265,7 +334,10 @@ export default function mindQueue(pi: ExtensionAPI) {
 		let insertion: { position: number; text: string } | undefined;
 
 		for (let position = 0; position <= before.length; position++) {
-			if (after === before.slice(0, position) + safeText + before.slice(position)) {
+			if (
+				after ===
+				before.slice(0, position) + safeText + before.slice(position)
+			) {
 				insertion = { position, text: safeText };
 				break;
 			}
@@ -274,16 +346,25 @@ export default function mindQueue(pi: ExtensionAPI) {
 		if (insertion) {
 			try {
 				const nextState = store.update((draft) => {
-					if (draft.undo?.operationId === operationId && draft.undo.actorSessionId === currentOrigin?.id) {
+					if (
+						draft.undo?.operationId === operationId &&
+						draft.undo.actorSessionId === currentOrigin?.id
+					) {
 						draft.undo.editorInsertion = insertion;
 					}
 				});
 				applyState(nextState, ctx);
 			} catch (error) {
-				ctx.ui.notify(`Thought moved, but Mind Queue could not save undo details: ${(error as Error).message}`, "warning");
+				ctx.ui.notify(
+					`Thought moved, but Mind Queue could not save undo details: ${(error as Error).message}`,
+					"warning",
+				);
 			}
 		}
-		ctx.ui.notify("Thought moved to the editor cursor · reopen Mind Queue and press U to undo", "info");
+		ctx.ui.notify(
+			"Thought moved to the editor cursor · reopen Mind Queue and press U to undo",
+			"info",
+		);
 	};
 
 	const showTodos = async (ctx: ExtensionContext): Promise<void> => {
@@ -306,28 +387,19 @@ export default function mindQueue(pi: ExtensionAPI) {
 						getThoughts: () => state?.todos ?? [],
 						currentSessionId: origin.id,
 						getUndoLabel,
-						addThought: (text) => mutate(ctx, "add", (draft, createdIn) => {
-							draft.todos.push({
-								id: draft.nextId++,
-								text,
-								done: false,
-								createdAt: new Date().toISOString(),
-								createdIn,
-							});
-							return true;
-						}),
-						removeThought: (thought, reason) => mutate(ctx, reason, (draft) =>
-							mutateThoughtIfCurrent(draft, thought, (_current, index) => {
-								draft.todos.splice(index, 1);
-							}),
-						),
-						toggleThought: (thought) => mutate(
-							ctx,
-							thought.done ? "mark open" : "mark done",
-							(draft) => mutateThoughtIfCurrent(draft, thought, (current) => {
-								current.done = !thought.done;
-							}),
-						),
+						addThought: (text) => addThought(ctx, text),
+						removeThought: (thought, reason) =>
+							mutate(ctx, reason, (draft) =>
+								mutateThoughtIfCurrent(draft, thought, (_current, index) => {
+									draft.todos.splice(index, 1);
+								}),
+							),
+						toggleThought: (thought) =>
+							mutate(ctx, thought.done ? "mark open" : "mark done", (draft) =>
+								mutateThoughtIfCurrent(draft, thought, (current) => {
+									current.done = !thought.done;
+								}),
+							),
 						undoLast: () => undoLast(ctx),
 						done,
 					}),
@@ -374,8 +446,19 @@ export default function mindQueue(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("mind", {
-		description: "Open the project-wide thought queue, grouped by creation session",
-		handler: async (_args, ctx) => showTodos(ctx),
+		description: "Open Mind Queue, or add a thought with /mind <text>",
+		handler: async (args, ctx) => {
+			const text = args.trim();
+			if (!text) {
+				await showTodos(ctx);
+				return;
+			}
+
+			if (!(await ensureInitialized(ctx)) || !refresh(ctx)) return;
+			currentContext = ctx;
+			syncCurrentOrigin(ctx);
+			if (addThought(ctx, text)) ctx.ui.notify("Added to Mind Queue", "info");
+		},
 	});
 
 	pi.registerCommand("mind-undo", {
@@ -395,7 +478,10 @@ export default function mindQueue(pi: ExtensionAPI) {
 			store = undefined;
 			state = undefined;
 			currentOrigin = undefined;
-			ctx.ui.notify(`Mind Queue could not initialize: ${(error as Error).message}`, "error");
+			ctx.ui.notify(
+				`Mind Queue could not initialize: ${(error as Error).message}`,
+				"error",
+			);
 		}
 	});
 
@@ -411,14 +497,18 @@ export default function mindQueue(pi: ExtensionAPI) {
 		try {
 			const nextState = store.update((draft) => {
 				const updateOrigin = (todo: ProjectTodo): void => {
-					if (todo.createdIn.id === currentOrigin?.id) todo.createdIn.name = name;
+					if (todo.createdIn.id === currentOrigin?.id)
+						todo.createdIn.name = name;
 				};
 				draft.todos.forEach(updateOrigin);
 				draft.undo?.todos.forEach(updateOrigin);
 			});
 			applyState(nextState, ctx);
 		} catch (error) {
-			ctx.ui.notify(`Mind Queue could not update the session label: ${(error as Error).message}`, "warning");
+			ctx.ui.notify(
+				`Mind Queue could not update the session label: ${(error as Error).message}`,
+				"warning",
+			);
 		}
 	});
 

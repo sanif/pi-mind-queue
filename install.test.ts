@@ -1,6 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import { execFile, execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -28,18 +34,22 @@ function packAndExtract(home: string): string {
 	return join(extracted, "package");
 }
 
-async function installedCommands(home: string): Promise<string[]> {
+async function inspectInstalledPackage(
+	home: string,
+	thought: string,
+): Promise<string[]> {
 	const pi = join(packageRoot, "node_modules", ".bin", "pi");
 	const env = { ...process.env, HOME: home };
 	const extracted = packAndExtract(home);
 	execFileSync(pi, ["install", extracted], { env, stdio: "pipe" });
 
-	return await new Promise((resolve, reject) => {
+	return new Promise((resolve, reject) => {
 		const child = execFile(pi, ["--mode", "rpc", "--no-session"], {
 			cwd: home,
 			env,
 			timeout: 15_000,
 		});
+		let commands: string[] | undefined;
 		let stdout = "";
 		let stderr = "";
 		const timer = setTimeout(() => {
@@ -57,15 +67,35 @@ async function installedCommands(home: string): Promise<string[]> {
 					const message = JSON.parse(line) as {
 						type?: string;
 						command?: string;
+						success?: boolean;
 						data?: { commands?: Array<{ name: string }> };
 					};
-					if (message.type !== "response" || message.command !== "get_commands") continue;
+					if (message.type !== "response") continue;
+					if (message.command === "get_commands") {
+						commands = (message.data?.commands ?? []).map(
+							(command) => command.name,
+						);
+						child.stdin?.write(
+							`${JSON.stringify({
+								id: "mind-capture",
+								type: "prompt",
+								message: `/mind ${thought}`,
+							})}\n`,
+						);
+						continue;
+					}
+					if (message.command !== "prompt") continue;
+					if (!message.success)
+						throw new Error("Pi rejected the Mind Queue command");
 					clearTimeout(timer);
 					child.kill();
-					resolve((message.data?.commands ?? []).map((command) => command.name));
+					resolve(commands ?? []);
 					return;
-				} catch {
-					continue;
+				} catch (error) {
+					clearTimeout(timer);
+					child.kill();
+					reject(error);
+					return;
 				}
 			}
 		});
@@ -80,12 +110,33 @@ async function installedCommands(home: string): Promise<string[]> {
 	});
 }
 
-test("a packed installation autoloads Mind Queue commands", async () => {
+test("a packed installation captures a thought through the Mind Queue command", async () => {
 	const home = mkdtempSync(join(tmpdir(), "mind-queue-pi-home-"));
 	tempHomes.push(home);
+	const thought = "Review the streaming command behavior";
 
-	const commands = await installedCommands(home);
+	const commands = await inspectInstalledPackage(home, thought);
 
 	expect(commands).toContain("mind");
 	expect(commands).toContain("mind-undo");
+
+	const storeDirectory = join(home, ".pi", "agent", "state", "mind-queue");
+	const stateFiles = readdirSync(storeDirectory).filter((name) =>
+		name.endsWith(".json"),
+	);
+	expect(stateFiles).toHaveLength(1);
+	const stateFile = stateFiles[0];
+	if (!stateFile) throw new Error("Mind Queue did not create a project store");
+	let state: { todos: Array<{ text: string; done: boolean }> };
+	try {
+		state = JSON.parse(
+			readFileSync(join(storeDirectory, stateFile), "utf8"),
+		) as typeof state;
+	} catch (error) {
+		throw new Error("Mind Queue created an invalid project store", {
+			cause: error,
+		});
+	}
+	expect(state.todos).toHaveLength(1);
+	expect(state.todos[0]).toMatchObject({ text: thought, done: false });
 }, 60_000);
