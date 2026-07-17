@@ -1,3 +1,6 @@
+import { statSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
@@ -22,6 +25,7 @@ export type DialogResult =
 
 export interface TodoManagerOptions {
 	theme: Theme;
+	cwd: string;
 	requestRender: () => void;
 	getThoughts: () => ProjectTodo[];
 	currentSessionId: string;
@@ -54,12 +58,106 @@ function snapshot(thought: ProjectTodo): ProjectTodo {
 	return { ...thought, createdIn: { ...thought.createdIn } };
 }
 
+const BRACKETED_PASTE_START = "\u001b[200~";
+const BRACKETED_PASTE_END = "\u001b[201~";
+
+function startsPathEscape(
+	character: string,
+	quote: "'" | '"' | undefined,
+	preserveBackslashes: boolean,
+): boolean {
+	return character === "\\" && quote !== "'" && !preserveBackslashes;
+}
+
+function isPathQuote(character: string): character is "'" | '"' {
+	return character === "'" || character === '"';
+}
+
+function isPathSeparator(
+	character: string,
+	quote: "'" | '"' | undefined,
+): boolean {
+	return quote === undefined && /\s/.test(character);
+}
+
+function splitDroppedPathTokens(text: string): string[] | undefined {
+	const trimmed = text.trim();
+	const tokens: string[] = [];
+	let token = "";
+	let quote: "'" | '"' | undefined;
+	let escaped = false;
+	const preserveBackslashes = /(?:^|\s)["']?[a-z]:\\/i.test(trimmed);
+
+	for (const character of trimmed) {
+		if (escaped) {
+			token += character;
+			escaped = false;
+			continue;
+		}
+		if (startsPathEscape(character, quote, preserveBackslashes)) {
+			escaped = true;
+			continue;
+		}
+		if (isPathQuote(character)) {
+			if (quote === character) quote = undefined;
+			else if (!quote) quote = character;
+			else token += character;
+			continue;
+		}
+		if (isPathSeparator(character, quote)) {
+			if (token) tokens.push(token);
+			token = "";
+			continue;
+		}
+		token += character;
+	}
+
+	if (escaped || quote) return undefined;
+	if (token) tokens.push(token);
+	return tokens.length > 0 ? tokens : undefined;
+}
+
+function droppedPath(token: string, cwd: string): string | undefined {
+	let path = token.startsWith("@") ? token.slice(1) : token;
+	if (!path || /[\u0000-\u001f\u007f]/.test(path)) return undefined;
+
+	try {
+		if (path.startsWith("file://")) path = fileURLToPath(path);
+		else if (!isAbsolute(path)) path = resolve(cwd, path);
+		if (!statSync(path).isFile()) return undefined;
+		return path;
+	} catch {
+		return undefined;
+	}
+}
+
+function formatFileReference(path: string): string {
+	if (!/\s/.test(path)) return `@${path}`;
+	return `@"${path.replaceAll('"', '\\"')}"`;
+}
+
+function formatDroppedFileReferences(
+	text: string,
+	cwd: string,
+): string | undefined {
+	const tokens = splitDroppedPathTokens(text);
+	if (!tokens) return undefined;
+	const paths: string[] = [];
+	for (const token of tokens) {
+		const path = droppedPath(token, cwd);
+		if (!path) return undefined;
+		paths.push(path);
+	}
+	return paths.map(formatFileReference).join(" ");
+}
+
 export class TodoManagerComponent implements Focusable {
 	private _focused = false;
 	private selected = 0;
 	private mode: "list" | "add" | "view" = "list";
 	private viewScroll = 0;
 	private input = new Input();
+	private addPasteBuffer: string | undefined;
 
 	constructor(private readonly options: TodoManagerOptions) {
 		this.configureInput();
@@ -71,7 +169,10 @@ export class TodoManagerComponent implements Focusable {
 			if (!text || !this.options.addThought(text)) return;
 			this.resetInput();
 			const newestId = this.options.getThoughts().at(-1)?.id;
-			this.selected = Math.max(0, this.thoughts().findIndex((thought) => thought.id === newestId));
+			this.selected = Math.max(
+				0,
+				this.thoughts().findIndex((thought) => thought.id === newestId),
+			);
 			this.options.requestRender();
 		};
 		this.input.onEscape = () => this.leaveInputMode();
@@ -103,12 +204,11 @@ export class TodoManagerComponent implements Focusable {
 		);
 	}
 
-	private selectedThought(): ProjectTodo | undefined {
-		return this.thoughts()[this.selected];
-	}
-
 	private clampSelection(): void {
-		this.selected = Math.max(0, Math.min(this.selected, this.thoughts().length - 1));
+		this.selected = Math.max(
+			0,
+			Math.min(this.selected, this.thoughts().length - 1),
+		);
 	}
 
 	private visibleListWindow(
@@ -129,11 +229,19 @@ export class TodoManagerComponent implements Focusable {
 				const previous = thoughts[start - 1];
 				const first = thoughts[start];
 				if (previous && first) {
-					const addedRows = 1 + (previous.createdIn.id === first.createdIn.id ? 0 : 1);
+					const addedRows =
+						1 + (previous.createdIn.id === first.createdIn.id ? 0 : 1);
 					const nextContentRows = contentRows + addedRows;
-					const totalRows = nextContentRows + (start - 1 > 0 ? 1 : 0) + (end < thoughts.length ? 1 : 0);
+					const totalRows =
+						nextContentRows +
+						(start - 1 > 0 ? 1 : 0) +
+						(end < thoughts.length ? 1 : 0);
 					if (totalRows <= maxRows) {
-						candidates.push({ side: "left", totalRows, contentRows: nextContentRows });
+						candidates.push({
+							side: "left",
+							totalRows,
+							contentRows: nextContentRows,
+						});
 					}
 				}
 			}
@@ -141,22 +249,33 @@ export class TodoManagerComponent implements Focusable {
 				const previous = thoughts[end - 1];
 				const next = thoughts[end];
 				if (previous && next) {
-					const addedRows = 1 + (previous.createdIn.id === next.createdIn.id ? 0 : 1);
+					const addedRows =
+						1 + (previous.createdIn.id === next.createdIn.id ? 0 : 1);
 					const nextContentRows = contentRows + addedRows;
-					const totalRows = nextContentRows + (start > 0 ? 1 : 0) + (end + 1 < thoughts.length ? 1 : 0);
+					const totalRows =
+						nextContentRows +
+						(start > 0 ? 1 : 0) +
+						(end + 1 < thoughts.length ? 1 : 0);
 					if (totalRows <= maxRows) {
-						candidates.push({ side: "right", totalRows, contentRows: nextContentRows });
+						candidates.push({
+							side: "right",
+							totalRows,
+							contentRows: nextContentRows,
+						});
 					}
 				}
 			}
 			if (candidates.length === 0) break;
 
 			candidates.sort((left, right) => {
-				if (left.totalRows !== right.totalRows) return left.totalRows - right.totalRows;
+				if (left.totalRows !== right.totalRows)
+					return left.totalRows - right.totalRows;
 				const leftSpan = this.selected - start;
 				const rightSpan = end - this.selected - 1;
 				if (left.side === right.side) return 0;
-				return left.side === "left" ? leftSpan - rightSpan : rightSpan - leftSpan;
+				return left.side === "left"
+					? leftSpan - rightSpan
+					: rightSpan - leftSpan;
 			});
 			const chosen = candidates[0];
 			if (!chosen) break;
@@ -170,8 +289,50 @@ export class TodoManagerComponent implements Focusable {
 
 	private leaveInputMode(): void {
 		this.mode = "list";
+		this.addPasteBuffer = undefined;
 		this.resetInput();
 		this.options.requestRender();
+	}
+
+	private insertAddPaste(text: string): void {
+		const references = formatDroppedFileReferences(text, this.options.cwd);
+		let pastedText = text;
+		if (references) {
+			const hasText = this.input.getValue().length > 0;
+			const endsWithSpace = /\s$/.test(this.input.getValue());
+			const prefix = hasText && !endsWithSpace ? " " : "";
+			pastedText = `${prefix}${references} `;
+		}
+		this.input.handleInput(
+			`${BRACKETED_PASTE_START}${pastedText}${BRACKETED_PASTE_END}`,
+		);
+	}
+
+	private handleAddInput(data: string): void {
+		let remaining = data;
+		while (remaining) {
+			if (this.addPasteBuffer !== undefined) {
+				const end = remaining.indexOf(BRACKETED_PASTE_END);
+				if (end === -1) {
+					this.addPasteBuffer += remaining;
+					return;
+				}
+				this.addPasteBuffer += remaining.slice(0, end);
+				this.insertAddPaste(this.addPasteBuffer);
+				this.addPasteBuffer = undefined;
+				remaining = remaining.slice(end + BRACKETED_PASTE_END.length);
+				continue;
+			}
+
+			const start = remaining.indexOf(BRACKETED_PASTE_START);
+			if (start === -1) {
+				this.input.handleInput(remaining);
+				return;
+			}
+			if (start > 0) this.input.handleInput(remaining.slice(0, start));
+			this.addPasteBuffer = "";
+			remaining = remaining.slice(start + BRACKETED_PASTE_START.length);
+		}
 	}
 
 	private handleViewInput(data: string): void {
@@ -244,7 +405,7 @@ export class TodoManagerComponent implements Focusable {
 		if (this.mode === "add") {
 			if (matchesKey(data, Key.tab)) this.leaveInputMode();
 			else {
-				this.input.handleInput(data);
+				this.handleAddInput(data);
 				this.options.requestRender();
 			}
 			return;
@@ -257,7 +418,8 @@ export class TodoManagerComponent implements Focusable {
 	}
 
 	render(width: number): string[] {
-		if (width <= 2) return width > 0 ? [truncateToWidth("Mind", width, "")] : [];
+		if (width <= 2)
+			return width > 0 ? [truncateToWidth("Mind", width, "")] : [];
 
 		const innerWidth = width - 2;
 		const lines: string[] = [];
@@ -266,28 +428,58 @@ export class TodoManagerComponent implements Focusable {
 
 		const fit = (text: string): string => {
 			const truncated = truncateToWidth(text, innerWidth, "…");
-			return truncated + " ".repeat(Math.max(0, innerWidth - visibleWidth(truncated)));
+			return (
+				truncated +
+				" ".repeat(Math.max(0, innerWidth - visibleWidth(truncated)))
+			);
 		};
 		const row = (text = ""): string =>
-			this.options.theme.fg("border", "│") + fit(text) + this.options.theme.fg("border", "│");
+			this.options.theme.fg("border", "│") +
+			fit(text) +
+			this.options.theme.fg("border", "│");
 
 		lines.push(this.options.theme.fg("border", `╭${"─".repeat(innerWidth)}╮`));
-		lines.push(row(` ${this.options.theme.fg("accent", this.options.theme.bold("Mind Queue"))}`));
-		lines.push(row(` ${this.options.theme.fg("dim", `${thoughts.length} thought${thoughts.length === 1 ? "" : "s"} · saved for this project`)}`));
+		lines.push(
+			row(
+				` ${this.options.theme.fg("accent", this.options.theme.bold("Mind Queue"))}`,
+			),
+		);
+		lines.push(
+			row(
+				` ${this.options.theme.fg("dim", `${thoughts.length} thought${thoughts.length === 1 ? "" : "s"} · saved for this project`)}`,
+			),
+		);
 		lines.push(row());
 
 		if (this.mode === "add") {
-			lines.push(row(` ${this.options.theme.fg("accent", "Capture thoughts one by one")}`));
+			lines.push(
+				row(
+					` ${this.options.theme.fg("accent", "Type a thought or drop files/images")}`,
+				),
+			);
+			lines.push(
+				row(
+					` ${this.options.theme.fg("dim", "Dropped items are saved as local path references")}`,
+				),
+			);
 			lines.push(row());
 			const inputLine = this.input.render(Math.max(1, innerWidth - 4))[0] ?? "";
 			lines.push(row(` > ${inputLine}`));
 			lines.push(row());
-			lines.push(row(` ${this.options.theme.fg("dim", "Enter add another · Tab/Esc return to list")}`));
+			lines.push(
+				row(
+					` ${this.options.theme.fg("dim", "Enter add another · Tab/Esc return to list")}`,
+				),
+			);
 		} else if (this.mode === "view") {
 			const thought = thoughts[this.selected];
 			lines.push(row(` ${this.options.theme.fg("accent", "Full thought")}`));
 			if (thought) {
-				lines.push(row(` ${this.options.theme.fg("dim", `Created in ${formatSessionOrigin(thought.createdIn, this.options.currentSessionId)}`)}`));
+				lines.push(
+					row(
+						` ${this.options.theme.fg("dim", `Created in ${formatSessionOrigin(thought.createdIn, this.options.currentSessionId)}`)}`,
+					),
+				);
 				lines.push(row());
 				const wrapped = wrapTextWithAnsi(
 					sanitizeThoughtForEditor(thought.text),
@@ -296,31 +488,55 @@ export class TodoManagerComponent implements Focusable {
 				const maxVisible = 12;
 				const maxScroll = Math.max(0, wrapped.length - maxVisible);
 				this.viewScroll = Math.min(this.viewScroll, maxScroll);
-				const visible = wrapped.slice(this.viewScroll, this.viewScroll + maxVisible);
+				const visible = wrapped.slice(
+					this.viewScroll,
+					this.viewScroll + maxVisible,
+				);
 				for (const text of visible) {
 					lines.push(row(` ${this.options.theme.fg("text", text)}`));
 				}
 				if (wrapped.length > maxVisible) {
 					const from = this.viewScroll + 1;
 					const to = this.viewScroll + visible.length;
-					lines.push(row(` ${this.options.theme.fg("dim", `Lines ${from}–${to} of ${wrapped.length}`)}`));
+					lines.push(
+						row(
+							` ${this.options.theme.fg("dim", `Lines ${from}–${to} of ${wrapped.length}`)}`,
+						),
+					);
 				}
 			}
 			lines.push(row());
-			lines.push(row(` ${this.options.theme.fg("dim", "↑↓/jk scroll · V/Tab/Esc return to queue")}`));
+			lines.push(
+				row(
+					` ${this.options.theme.fg("dim", "↑↓/jk scroll · V/Tab/Esc return to queue")}`,
+				),
+			);
 		} else if (thoughts.length === 0) {
-			lines.push(row(` ${this.options.theme.fg("muted", "Your project mind queue is empty.")}`));
-			lines.push(row(` ${this.options.theme.fg("dim", "Press A to capture your first thought.")}`));
+			lines.push(
+				row(
+					` ${this.options.theme.fg("muted", "Your project mind queue is empty.")}`,
+				),
+			);
+			lines.push(
+				row(
+					` ${this.options.theme.fg("dim", "Press A to capture your first thought.")}`,
+				),
+			);
 		} else {
 			const { start, end } = this.visibleListWindow(thoughts, 10);
-			if (start > 0) lines.push(row(` ${this.options.theme.fg("dim", `↑ ${start} more`)}`));
+			if (start > 0)
+				lines.push(row(` ${this.options.theme.fg("dim", `↑ ${start} more`)}`));
 			let renderedSessionId: string | undefined;
 			for (let index = start; index < end; index++) {
 				const thought = thoughts[index];
 				if (!thought) continue;
 				if (thought.createdIn.id !== renderedSessionId) {
 					renderedSessionId = thought.createdIn.id;
-					lines.push(row(` ${this.options.theme.fg("muted", `Session · ${formatSessionOrigin(thought.createdIn, this.options.currentSessionId)}`)}`));
+					lines.push(
+						row(
+							` ${this.options.theme.fg("muted", `Session · ${formatSessionOrigin(thought.createdIn, this.options.currentSessionId)}`)}`,
+						),
+					);
 				}
 				const active = index === this.selected;
 				const pointer = active ? this.options.theme.fg("accent", "›") : " ";
@@ -329,23 +545,46 @@ export class TodoManagerComponent implements Focusable {
 					: this.options.theme.fg("dim", "○");
 				const safeText = sanitizeThoughtForDisplay(thought.text);
 				const label = thought.done
-					? this.options.theme.fg("muted", this.options.theme.strikethrough(safeText))
+					? this.options.theme.fg(
+							"muted",
+							this.options.theme.strikethrough(safeText),
+						)
 					: this.options.theme.fg(active ? "accent" : "text", safeText);
 				lines.push(row(` ${pointer} ${marker} ${label}`));
 			}
 			if (end < thoughts.length) {
-				lines.push(row(` ${this.options.theme.fg("dim", `↓ ${thoughts.length - end} more`)}`));
+				lines.push(
+					row(
+						` ${this.options.theme.fg("dim", `↓ ${thoughts.length - end} more`)}`,
+					),
+				);
 			}
 		}
 
 		lines.push(row());
 		if (this.mode === "list") {
-			lines.push(row(` ${this.options.theme.fg("dim", "A add · E edit · V view full · Enter move to editor")}`));
-			lines.push(row(` ${this.options.theme.fg("dim", "↑↓/jk select · D/Delete remove · X/Space done · U undo")}`));
-			lines.push(row(` ${this.options.theme.fg("dim", "Ctrl+Shift+M open/close · Esc close · /mind")}`));
+			lines.push(
+				row(
+					` ${this.options.theme.fg("dim", "A add · E edit · V view full · Enter move to editor")}`,
+				),
+			);
+			lines.push(
+				row(
+					` ${this.options.theme.fg("dim", "↑↓/jk select · D/Delete remove · X/Space done · U undo")}`,
+				),
+			);
+			lines.push(
+				row(
+					` ${this.options.theme.fg("dim", "Ctrl+Shift+M open/close · Esc close · /mind")}`,
+				),
+			);
 			const undoLabel = this.options.getUndoLabel();
 			if (undoLabel) {
-				lines.push(row(` ${this.options.theme.fg("warning", `Undo available: ${undoLabel}`)}`));
+				lines.push(
+					row(
+						` ${this.options.theme.fg("warning", `Undo available: ${undoLabel}`)}`,
+					),
+				);
 			}
 		}
 		lines.push(this.options.theme.fg("border", `╰${"─".repeat(innerWidth)}╯`));

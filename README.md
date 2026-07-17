@@ -39,7 +39,7 @@ change the normal Pi editor outside the overlay.
 
 | Action | Key |
 | --- | --- |
-| Add a thought | `A` |
+| Add a thought or drop local files/images | `A` |
 | Edit in Pi's multiline editor | `E` |
 | View the complete thought | `V` |
 | Move the thought to Pi's editor | `Enter` |
@@ -52,6 +52,10 @@ change the normal Pi editor outside the overlay.
 `/mind <thought>` saves immediately, including while the agent is working.
 It does not interrupt the agent or send the command to the model; it only
 updates the local project queue.
+
+In the `A` screen, drag local files or images into the terminal to add them as
+absolute `@path` references. Mind Queue does not copy or read the dropped file;
+the reference stops working if the original file is moved or deleted.
 
 ## Agent collaboration
 

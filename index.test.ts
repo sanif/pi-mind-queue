@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
 	formatMindQueueStatus,
 	TodoManagerComponent,
@@ -8,9 +12,12 @@ import {
 } from "./component";
 import type { ProjectTodo, SessionOrigin } from "./store";
 
-const passthroughTheme = new Proxy({}, {
-	get: () => (_colorOrText: string, text?: string) => text ?? _colorOrText,
-}) as Theme;
+const passthroughTheme = new Proxy(
+	{},
+	{
+		get: () => (_colorOrText: string, text?: string) => text ?? _colorOrText,
+	},
+) as Theme;
 
 const currentSession: SessionOrigin = {
 	id: "bbbbbbbb-current",
@@ -42,6 +49,7 @@ function createComponent(
 	let result: DialogResult;
 	const options: TodoManagerOptions = {
 		theme: passthroughTheme,
+		cwd: process.cwd(),
 		requestRender: () => {},
 		getThoughts: () => thoughts,
 		currentSessionId: currentSession.id,
@@ -61,7 +69,8 @@ function createComponent(
 
 describe("Mind Queue full thought view", () => {
 	test("V opens the selected thought and wraps its complete text", () => {
-		const text = "Beginning of a long thought that cannot fit on one queue row, but its ending must remain visible.";
+		const text =
+			"Beginning of a long thought that cannot fit on one queue row, but its ending must remain visible.";
 		const { component } = createComponent(text);
 
 		component.handleInput("v");
@@ -89,7 +98,9 @@ describe("Mind Queue full thought view", () => {
 	});
 
 	test("Escape returns from the full thought to the queue instead of closing it", () => {
-		const { component, result } = createComponent("A thought worth reading in full");
+		const { component, result } = createComponent(
+			"A thought worth reading in full",
+		);
 
 		component.handleInput("v");
 		component.handleInput("\u001b");
@@ -115,7 +126,9 @@ describe("Mind Queue full thought view", () => {
 		expect(rendered).toContain("2 thoughts · saved for this project");
 		expect(rendered).toContain("Session · Current work · #bbbbbbbb · current");
 		expect(rendered).toContain("Session · Earlier work · #aaaaaaaa");
-		expect(rendered.indexOf("Current work")).toBeLessThan(rendered.indexOf("Earlier work"));
+		expect(rendered.indexOf("Current work")).toBeLessThan(
+			rendered.indexOf("Earlier work"),
+		);
 	});
 
 	test("the full-thought view identifies the session where the thought was created", () => {
@@ -216,6 +229,59 @@ describe("Mind Queue full thought view", () => {
 
 		expect(result()).toBeUndefined();
 		expect(component.render(72).join("\n")).toContain("Do not lose me");
+	});
+});
+
+describe("Mind Queue add attachments", () => {
+	test("turns dropped files and images into local path references", () => {
+		const directory = mkdtempSync(join(tmpdir(), "mind-queue-drop-"));
+		try {
+			const imagePath = join(directory, "screen shot.png");
+			const filePath = join(directory, "notes.txt");
+			writeFileSync(imagePath, "image");
+			writeFileSync(filePath, "notes");
+			let addedText: string | undefined;
+			const { component } = createComponent("ignored", [], {
+				cwd: directory,
+				addThought: (text) => {
+					addedText = text;
+					return true;
+				},
+			});
+
+			component.handleInput("a");
+			const addView = component.render(72).join("\n");
+			expect(addView).toContain("drop files/images");
+			expect(addView).toContain("local path references");
+
+			component.handleInput("Review ");
+			const escapedImagePath = imagePath.replaceAll(" ", "\\ ");
+			const dropped = `${escapedImagePath} ${pathToFileURL(filePath).href}`;
+			const splitAt = Math.floor(dropped.length / 2);
+			component.handleInput(`\u001b[200~${dropped.slice(0, splitAt)}`);
+			component.handleInput(`${dropped.slice(splitAt)}\u001b[201~`);
+			component.handleInput("\r");
+
+			expect(addedText).toBe(`Review @"${imagePath}" @${filePath}`);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("keeps ordinary pasted text unchanged", () => {
+		let addedText: string | undefined;
+		const { component } = createComponent("ignored", [], {
+			addThought: (text) => {
+				addedText = text;
+				return true;
+			},
+		});
+
+		component.handleInput("a");
+		component.handleInput("\u001b[200~plain pasted note\u001b[201~");
+		component.handleInput("\r");
+
+		expect(addedText).toBe("plain pasted note");
 	});
 });
 

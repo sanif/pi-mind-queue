@@ -7,6 +7,11 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- Drop local files or images into the Add screen to save absolute path
+  references alongside a thought without copying file contents.
+
 ## [0.3.0] - 2026-07-17
 
 ### Added

@@ -578,6 +578,7 @@ export default function mindQueue(
 				(tui, theme, _keybindings, done) =>
 					new TodoManagerComponent({
 						theme,
+						cwd: ctx.cwd,
 						requestRender: () => tui.requestRender(),
 						getThoughts: () => state?.todos ?? [],
 						currentSessionId: origin.id,
