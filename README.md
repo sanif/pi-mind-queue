@@ -22,21 +22,32 @@ If you previously installed a local development copy at `~/.pi/agent/extensions/
 
 ## Use
 
-| Action | Key |
+### Available from Pi
+
+| Action | Command |
 | --- | --- |
-| Open or close | `Ctrl+Shift+M` |
-| Open by command | `/mind` |
+| Toggle Mind Queue | `Ctrl+Shift+M` |
+| Open Mind Queue | `/mind` |
 | Add while Pi is working | `/mind <thought>` |
 | Review stale thoughts | `/mind cleanup` |
-| Add from the queue | `A` |
+| Undo the latest change | `/mind undo` |
+
+### While Mind Queue is open
+
+These keys are handled only while the Mind Queue overlay is open. They do not
+change the normal Pi editor outside the overlay.
+
+| Action | Key |
+| --- | --- |
+| Add a thought | `A` |
 | Edit in Pi's multiline editor | `E` |
 | View the complete thought | `V` |
 | Move the thought to Pi's editor | `Enter` |
 | Mark open or done | `X` or `Space` |
 | Remove | `D` or `Delete` |
-| Undo this session's latest change | `U` or `/mind undo` |
+| Undo this session's latest change | `U` |
 | Move selection | arrow keys or `J`/`K` |
-| Close | `Esc` |
+| Close | `Esc` or `Ctrl+Shift+M` |
 
 `/mind <thought>` saves immediately, including while the agent is working.
 It does not interrupt the agent or send the command to the model; it only
