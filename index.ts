@@ -1,5 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { StringEnum, Type } from "@earendil-works/pi-ai";
 import {
 	getAgentDir,
 	SessionManager,
@@ -21,9 +22,11 @@ import {
 import {
 	cloneTodos,
 	cloneUndo,
+	formatSessionOrigin,
 	MindQueueStore,
 	mutateThoughtIfCurrent,
 	normalizeSessionLabel,
+	orderTodosBySession,
 	resolveProjectRoot,
 	type ProjectQueueState,
 	type ProjectTodo,
@@ -62,7 +65,189 @@ function sessionOrigin(ctx: ExtensionContext): SessionOrigin {
 class UndoUnavailableError extends Error {}
 class MutationUnavailableError extends Error {}
 
-export default function mindQueue(pi: ExtensionAPI) {
+export interface MindQueueOptions {
+	agentDir?: string;
+}
+
+type MindQueueFilter = "open" | "done" | "all";
+type MindQueueStatus = "open" | "done";
+
+interface MindQueueToolItem {
+	id: number;
+	text: string;
+	status: MindQueueStatus;
+	revision: string;
+	createdAt: string;
+	createdIn: string;
+}
+
+interface MindQueueToolDetails {
+	action: "list" | "add" | "set_status" | "remove";
+	filter?: MindQueueFilter;
+	items: MindQueueToolItem[];
+	matchedCount: number;
+	openCount: number;
+	totalCount: number;
+}
+
+const MIND_QUEUE_TOOL_ITEM_LIMIT = 50;
+const MIND_QUEUE_TOOL_TEXT_LIMIT = 500;
+const MIND_QUEUE_CLEANUP_PROMPT = `Review my open Mind Queue for thoughts that may already be completed or stale. First use mind_queue list with the open filter. Inspect relevant git history and current project files or features for evidence. Present only likely completed or stale thoughts with concise evidence, then ask me which specific IDs to remove. Do not call mind_queue remove until I explicitly confirm the IDs in a later message. If none look stale, tell me that instead.`;
+const MindQueueToolParameters = Type.Object({
+	action: StringEnum(["list", "add", "set_status", "remove"] as const),
+	filter: Type.Optional(StringEnum(["open", "done", "all"] as const)),
+	text: Type.Optional(
+		Type.String({ description: "Thought text; required for add" }),
+	),
+	id: Type.Optional(
+		Type.Number({
+			description:
+				"Thought ID; optional exact lookup for list and required for set_status",
+		}),
+	),
+	status: Type.Optional(StringEnum(["open", "done"] as const)),
+	revision: Type.Optional(
+		Type.String({
+			description:
+				"Revision returned by list; required for concurrency-safe set_status or remove",
+		}),
+	),
+	confirmed: Type.Optional(
+		Type.Boolean({
+			description:
+				"Must be true for remove, only after the user explicitly confirms the thought ID",
+		}),
+	),
+});
+
+function thoughtRevision(thought: ProjectTodo): string {
+	return createHash("sha256")
+		.update(`${thought.id}\0${thought.done ? "done" : "open"}\0${thought.text}`)
+		.digest("hex")
+		.slice(0, 12);
+}
+
+function toolThoughtText(text: string): string {
+	const cleaned = sanitizeThoughtForEditor(text).replace(/\s+/g, " ").trim();
+	return cleaned.length > MIND_QUEUE_TOOL_TEXT_LIMIT
+		? `${cleaned.slice(0, MIND_QUEUE_TOOL_TEXT_LIMIT - 1).trimEnd()}…`
+		: cleaned;
+}
+
+function toolItem(
+	thought: ProjectTodo,
+	currentSessionId?: string,
+): MindQueueToolItem {
+	return {
+		id: thought.id,
+		text: toolThoughtText(thought.text),
+		status: thought.done ? "done" : "open",
+		revision: thoughtRevision(thought),
+		createdAt: thought.createdAt,
+		createdIn: formatSessionOrigin(thought.createdIn, currentSessionId),
+	};
+}
+
+function toolCounts(state: ProjectQueueState): {
+	openCount: number;
+	totalCount: number;
+} {
+	return {
+		openCount: state.todos.filter((thought) => !thought.done).length,
+		totalCount: state.todos.length,
+	};
+}
+
+function listToolResult(
+	state: ProjectQueueState,
+	currentSessionId: string,
+	filter: MindQueueFilter,
+	id?: number,
+) {
+	let matches: ProjectTodo[];
+	if (id !== undefined) {
+		matches = state.todos.filter((thought) => thought.id === id);
+	} else {
+		matches = orderTodosBySession(state.todos, currentSessionId).filter(
+			(thought) => {
+				if (filter === "all") return true;
+				return filter === "done" ? thought.done : !thought.done;
+			},
+		);
+	}
+	const items = matches
+		.slice(0, MIND_QUEUE_TOOL_ITEM_LIMIT)
+		.map((thought) => toolItem(thought, currentSessionId));
+	const remaining = matches.length - items.length;
+	let content: string;
+	if (items.length === 0) {
+		if (id !== undefined) {
+			content = `Mind Queue thought #${id} was not found.`;
+		} else {
+			const qualifier = filter === "all" ? "" : `${filter} `;
+			content = `No ${qualifier}thoughts in Mind Queue.`;
+		}
+	} else {
+		const lines = items.map(
+			(item) =>
+				`[${item.status}] #${item.id} rev:${item.revision} ${item.text}`,
+		);
+		if (remaining > 0) lines.push(`…and ${remaining} more matching thoughts.`);
+		content = lines.join("\n");
+	}
+	return {
+		content: [{ type: "text" as const, text: content }],
+		details: {
+			action: "list",
+			...(id === undefined ? { filter } : {}),
+			items,
+			matchedCount: matches.length,
+			...toolCounts(state),
+		} satisfies MindQueueToolDetails,
+	};
+}
+
+function revisionCheckedThought(
+	state: ProjectQueueState,
+	id: number | undefined,
+	revision: string | undefined,
+	action: "set_status" | "remove",
+): ProjectTodo {
+	if (id === undefined || revision === undefined) {
+		throw new Error(`Mind Queue ${action} requires id and revision from list`);
+	}
+	const thought = state.todos.find((candidate) => candidate.id === id);
+	if (!thought) throw new Error(`Mind Queue thought #${id} was not found`);
+	if (thoughtRevision(thought) !== revision) {
+		throw new Error(
+			"Mind Queue thought changed; call list again before updating it",
+		);
+	}
+	return thought;
+}
+
+function mutationToolResult(options: {
+	action: "add" | "set_status" | "remove";
+	state: ProjectQueueState;
+	thought: ProjectTodo;
+	currentSessionId: string;
+	message: string;
+}) {
+	return {
+		content: [{ type: "text" as const, text: options.message }],
+		details: {
+			action: options.action,
+			items: [toolItem(options.thought, options.currentSessionId)],
+			matchedCount: 1,
+			...toolCounts(options.state),
+		} satisfies MindQueueToolDetails,
+	};
+}
+
+export default function mindQueue(
+	pi: ExtensionAPI,
+	options: MindQueueOptions = {},
+) {
 	const sessionCatalog: SessionCatalog = {
 		listAll: (sessionDir) =>
 			sessionDir
@@ -114,7 +299,10 @@ export default function mindQueue(pi: ExtensionAPI) {
 		currentContext = ctx;
 		currentOrigin = sessionOrigin(ctx);
 		const projectRoot = resolveProjectRoot(ctx.cwd);
-		const nextStore = new MindQueueStore(projectRoot, getAgentDir());
+		const nextStore = new MindQueueStore(
+			projectRoot,
+			options.agentDir ?? getAgentDir(),
+		);
 		const imported = existsSync(nextStore.filePath)
 			? []
 			: await collectLegacyTodos(
@@ -250,17 +438,24 @@ export default function mindQueue(pi: ExtensionAPI) {
 		}
 	};
 
-	const addThought = (ctx: ExtensionContext, text: string): boolean =>
-		mutate(ctx, "add", (draft, createdIn) => {
-			draft.todos.push({
+	const addThought = (
+		ctx: ExtensionContext,
+		text: string,
+	): ProjectTodo | undefined => {
+		let added: ProjectTodo | undefined;
+		const saved = mutate(ctx, "add", (draft, createdIn) => {
+			added = {
 				id: draft.nextId++,
 				text,
 				done: false,
 				createdAt: new Date().toISOString(),
 				createdIn,
-			});
+			};
+			draft.todos.push(added);
 			return true;
 		});
+		return saved ? added : undefined;
+	};
 
 	const getUndoLabel = (): string | undefined => {
 		if (!state?.undo || state.undo.actorSessionId !== currentOrigin?.id)
@@ -387,7 +582,7 @@ export default function mindQueue(pi: ExtensionAPI) {
 						getThoughts: () => state?.todos ?? [],
 						currentSessionId: origin.id,
 						getUndoLabel,
-						addThought: (text) => addThought(ctx, text),
+						addThought: (text) => addThought(ctx, text) !== undefined,
 						removeThought: (thought, reason) =>
 							mutate(ctx, reason, (draft) =>
 								mutateThoughtIfCurrent(draft, thought, (_current, index) => {
@@ -440,17 +635,165 @@ export default function mindQueue(pi: ExtensionAPI) {
 		}
 	};
 
+	pi.registerTool({
+		name: "mind_queue",
+		label: "Mind Queue",
+		description:
+			"List, add, change status, or remove a confirmed stale project Mind Queue thought. Use only when the user explicitly asks to inspect, save, or update Mind Queue. For set_status or remove, call list first and pass the returned ID and revision. Remove also requires confirmed=true after the user confirms that specific ID. List accepts an optional ID for exact lookup and otherwise returns at most 50 matching thoughts.",
+		promptSnippet:
+			"List, add, update, or remove confirmed stale project thoughts",
+		promptGuidelines: [
+			"Use mind_queue only when the user explicitly asks to save, inspect, or update Mind Queue thoughts; never capture ordinary conversation automatically.",
+			"Use mind_queue remove only after the user explicitly confirms the specific thought ID in the current conversation.",
+		],
+		executionMode: "sequential",
+		parameters: MindQueueToolParameters,
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			if (signal?.aborted) throw new Error("Mind Queue action cancelled");
+			if (!(await ensureInitialized(ctx)) || !refresh(ctx)) {
+				throw new Error("Mind Queue could not load the project queue");
+			}
+			currentContext = ctx;
+			syncCurrentOrigin(ctx);
+			if (!state || !currentOrigin) {
+				throw new Error("Mind Queue is not initialized");
+			}
+			if (signal?.aborted) throw new Error("Mind Queue action cancelled");
+
+			if (params.action === "list") {
+				return listToolResult(
+					state,
+					currentOrigin.id,
+					params.filter ?? "open",
+					params.id,
+				);
+			}
+
+			if (params.action === "add") {
+				const text = params.text?.trim();
+				if (!text) throw new Error("Mind Queue add requires non-empty text");
+				const added = addThought(ctx, text);
+				if (!added) throw new Error("Mind Queue could not add the thought");
+				const item = toolItem(added, currentOrigin.id);
+				return mutationToolResult({
+					action: "add",
+					state,
+					thought: added,
+					currentSessionId: currentOrigin.id,
+					message: `Added Mind Queue thought #${item.id}: ${item.text}`,
+				});
+			}
+
+			if (params.action === "remove") {
+				if (params.confirmed !== true) {
+					throw new Error(
+						"Mind Queue remove requires explicit user confirmation for the specific thought ID",
+					);
+				}
+				const thought = revisionCheckedThought(
+					state,
+					params.id,
+					params.revision,
+					"remove",
+				);
+				const expected = { ...thought, createdIn: { ...thought.createdIn } };
+				const changed = mutate(ctx, "remove stale", (draft) =>
+					mutateThoughtIfCurrent(draft, expected, (_current, index) => {
+						draft.todos.splice(index, 1);
+					}),
+				);
+				if (!changed) {
+					throw new Error(
+						"Mind Queue thought changed; call list again before removing it",
+					);
+				}
+				return mutationToolResult({
+					action: "remove",
+					state,
+					thought: expected,
+					currentSessionId: currentOrigin.id,
+					message: `Removed Mind Queue thought #${expected.id}: ${toolThoughtText(expected.text)}`,
+				});
+			}
+
+			if (params.status === undefined) {
+				throw new Error("Mind Queue set_status requires status");
+			}
+			const thought = revisionCheckedThought(
+				state,
+				params.id,
+				params.revision,
+				"set_status",
+			);
+			const targetDone = params.status === "done";
+			if (thought.done !== targetDone) {
+				const expected = { ...thought, createdIn: { ...thought.createdIn } };
+				const changed = mutate(ctx, `mark ${params.status}`, (draft) =>
+					mutateThoughtIfCurrent(draft, expected, (current) => {
+						current.done = targetDone;
+					}),
+				);
+				if (!changed) {
+					throw new Error(
+						"Mind Queue thought changed; call list again before updating it",
+					);
+				}
+			}
+			const updated = state.todos.find(
+				(candidate) => candidate.id === params.id,
+			);
+			if (!updated)
+				throw new Error(`Mind Queue thought #${params.id} was not found`);
+			const item = toolItem(updated, currentOrigin.id);
+			return mutationToolResult({
+				action: "set_status",
+				state,
+				thought: updated,
+				currentSessionId: currentOrigin.id,
+				message: `Mind Queue thought #${item.id} is ${item.status}.`,
+			});
+		},
+	});
+
 	pi.registerShortcut(MIND_QUEUE_SHORTCUT, {
 		description: "Open Mind Queue",
 		handler: showTodos,
 	});
 
+	const requestCleanup = (ctx: ExtensionContext): void => {
+		if (ctx.isIdle()) {
+			pi.sendUserMessage(MIND_QUEUE_CLEANUP_PROMPT);
+			return;
+		}
+		pi.sendUserMessage(MIND_QUEUE_CLEANUP_PROMPT, {
+			deliverAs: "followUp",
+		});
+	};
+
+	const runUndo = async (ctx: ExtensionContext): Promise<void> => {
+		if (!(await ensureInitialized(ctx))) return;
+		currentContext = ctx;
+		refresh(ctx);
+		undoLast(ctx);
+	};
+
 	pi.registerCommand("mind", {
-		description: "Open Mind Queue, or add a thought with /mind <text>",
+		description:
+			"Open Mind Queue, add a thought, or run /mind cleanup or /mind undo",
 		handler: async (args, ctx) => {
 			const text = args.trim();
 			if (!text) {
 				await showTodos(ctx);
+				return;
+			}
+
+			const subcommand = text.toLowerCase();
+			if (subcommand === "cleanup") {
+				requestCleanup(ctx);
+				return;
+			}
+			if (subcommand === "undo") {
+				await runUndo(ctx);
 				return;
 			}
 
@@ -462,13 +805,8 @@ export default function mindQueue(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("mind-undo", {
-		description: "Undo this session's latest Mind Queue change",
-		handler: async (_args, ctx) => {
-			if (!(await ensureInitialized(ctx))) return;
-			currentContext = ctx;
-			refresh(ctx);
-			undoLast(ctx);
-		},
+		description: "Legacy alias for /mind undo",
+		handler: (_args, ctx) => runUndo(ctx),
 	});
 
 	pi.on("session_start", async (_event, ctx) => {

@@ -27,19 +27,40 @@ If you previously installed a local development copy at `~/.pi/agent/extensions/
 | Open or close | `Ctrl+Shift+M` |
 | Open by command | `/mind` |
 | Add while Pi is working | `/mind <thought>` |
+| Review stale thoughts | `/mind cleanup` |
 | Add from the queue | `A` |
 | Edit in Pi's multiline editor | `E` |
 | View the complete thought | `V` |
 | Move the thought to Pi's editor | `Enter` |
 | Mark open or done | `X` or `Space` |
 | Remove | `D` or `Delete` |
-| Undo this session's latest change | `U` or `/mind-undo` |
+| Undo this session's latest change | `U` or `/mind undo` |
 | Move selection | arrow keys or `J`/`K` |
 | Close | `Esc` |
 
 `/mind <thought>` saves immediately, including while the agent is working.
 It does not interrupt the agent or send the command to the model; it only
 updates the local project queue.
+
+## Agent collaboration
+
+When explicitly asked, the agent can use the `mind_queue` tool to:
+
+- list open, completed, or all thoughts;
+- add a thought;
+- mark a thought open or done;
+- remove a stale thought after you explicitly confirm its ID.
+
+For example: “Show my Mind Queue,” “Save this in my Mind Queue,” or “Mark
+thought #3 done.” The tool never captures ordinary conversation or injects the
+queue automatically. Agent tool results may contain thought text, making that
+text visible to the current model provider. Agent-driven edit and move-to-editor
+actions are intentionally unavailable.
+
+`/mind cleanup` starts an agent review of open thoughts against relevant Git
+history and current project features. The agent presents likely completed or
+stale thoughts with evidence and asks which IDs to remove. Nothing is removed
+until you explicitly confirm the specific IDs.
 
 Moving a thought removes it from the queue and inserts it at the current Pi editor cursor. `U` restores both the queue entry and the inserted editor text when the editor has not changed around that insertion.
 

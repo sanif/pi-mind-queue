@@ -31,11 +31,12 @@ describe("Pi package manifest", () => {
 	test("declares a public Pi extension package with host peers", () => {
 		const pkg = readPackage();
 		expect(pkg.name).toBe("pi-mind-queue");
-		expect(pkg.version).toBe("0.2.0");
+		expect(pkg.version).toBe("0.3.0");
 		expect(pkg.license).toBe("MIT");
 		expect(pkg.keywords).toContain("pi-package");
 		expect(pkg.pi?.extensions).toEqual(["./index.ts"]);
 		expect(pkg.peerDependencies).toEqual({
+			"@earendil-works/pi-ai": "*",
 			"@earendil-works/pi-coding-agent": "*",
 			"@earendil-works/pi-tui": "*",
 		});

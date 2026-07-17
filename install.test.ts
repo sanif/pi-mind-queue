@@ -118,6 +118,7 @@ test("a packed installation captures a thought through the Mind Queue command", 
 	const commands = await inspectInstalledPackage(home, thought);
 
 	expect(commands).toContain("mind");
+	expect(commands).not.toContain("mind-cleanup");
 	expect(commands).toContain("mind-undo");
 
 	const storeDirectory = join(home, ".pi", "agent", "state", "mind-queue");
