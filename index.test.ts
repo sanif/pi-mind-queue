@@ -19,6 +19,21 @@ const passthroughTheme = new Proxy(
 	},
 ) as Theme;
 
+const selectionTheme = new Proxy(
+	{},
+	{
+		get: (_target, property) => {
+			if (property === "bg") {
+				return (color: string, text: string) => {
+					if (color === "selectedBg") return `<selected>${text}</selected>`;
+					return text;
+				};
+			}
+			return (_colorOrText: string, text?: string) => text ?? _colorOrText;
+		},
+	},
+) as Theme;
+
 const currentSession: SessionOrigin = {
 	id: "bbbbbbbb-current",
 	name: "Current work",
@@ -76,7 +91,7 @@ describe("Mind Queue full thought view", () => {
 		component.handleInput("v");
 		const rendered = component.render(34).join("\n");
 
-		expect(rendered).toContain("Full thought");
+		expect(rendered).toContain("Thought details");
 		expect(rendered).toContain("Beginning of a long");
 		expect(rendered).toContain("remain visible.");
 		expect(rendered).not.toContain("Beginning of a long thought…");
@@ -116,19 +131,43 @@ describe("Mind Queue full thought view", () => {
 			createdAt: "2026-07-13T08:00:00.000Z",
 			persisted: true,
 		};
-		const { component } = createComponent("ignored", [
-			thought(1, "Thought from yesterday", earlierSession),
-			thought(2, "Thought from here", currentSession),
-		]);
+		const { component } = createComponent(
+			"ignored",
+			[
+				thought(1, "Thought from yesterday", earlierSession),
+				thought(2, "Thought from here", currentSession),
+			],
+			{ cwd: "/work/example-project" },
+		);
 
-		const rendered = component.render(72).join("\n");
+		const rendered = component.render(88).join("\n");
 
-		expect(rendered).toContain("2 thoughts · saved for this project");
+		expect(rendered).toContain("2 open · 0 done");
+		expect(rendered).toContain(
+			"2 thoughts · example-project · saved automatically",
+		);
 		expect(rendered).toContain("Session · Current work · #bbbbbbbb · current");
 		expect(rendered).toContain("Session · Earlier work · #aaaaaaaa");
 		expect(rendered.indexOf("Current work")).toBeLessThan(
 			rendered.indexOf("Earlier work"),
 		);
+	});
+
+	test("shows queue counts and highlights the selected thought", () => {
+		const completed = { ...thought(2, "Finished thought"), done: true };
+		const { component } = createComponent(
+			"ignored",
+			[thought(1, "Selected thought"), completed],
+			{ theme: selectionTheme },
+		);
+
+		const lines = component.render(72);
+		const selectedLine = lines.find((line) =>
+			line.includes("Selected thought"),
+		);
+
+		expect(lines.join("\n")).toContain("1 open · 1 done");
+		expect(selectedLine).toContain("<selected>");
 	});
 
 	test("the full-thought view identifies the session where the thought was created", () => {
@@ -177,7 +216,7 @@ describe("Mind Queue full thought view", () => {
 		);
 
 		expect(selectedLine).toBeGreaterThanOrEqual(0);
-		expect(lines.length).toBeLessThanOrEqual(20);
+		expect(lines.length).toBeLessThanOrEqual(24);
 	});
 
 	test("strips complete terminal control sequences from thought rendering", () => {
@@ -252,7 +291,7 @@ describe("Mind Queue add attachments", () => {
 			component.handleInput("a");
 			const addView = component.render(72).join("\n");
 			expect(addView).toContain("drop files/images");
-			expect(addView).toContain("local path references");
+			expect(addView).toContain("@path references");
 
 			component.handleInput("Review ");
 			const escapedImagePath = imagePath.replaceAll(" ", "\\ ");

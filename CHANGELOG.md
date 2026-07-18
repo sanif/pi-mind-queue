@@ -11,6 +11,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 - Drop local files or images into the Add screen to save absolute path
   references alongside a thought without copying file contents.
+- Work in a larger popup that shows the current project folder, open/done
+  counts, clearer modes, highlighted selection, structured sections, and
+  easier-to-scan keyboard hints.
 
 ## [0.3.0] - 2026-07-17
 

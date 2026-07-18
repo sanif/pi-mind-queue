@@ -603,9 +603,9 @@ export default function mindQueue(
 					overlay: true,
 					overlayOptions: {
 						anchor: "center",
-						width: 72,
-						minWidth: 44,
-						maxHeight: "85%",
+						width: 88,
+						minWidth: 56,
+						maxHeight: "90%",
 						margin: 1,
 					},
 				},

@@ -1,5 +1,5 @@
 import { statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import type { Theme } from "@earendil-works/pi-coding-agent";
@@ -424,8 +424,14 @@ export class TodoManagerComponent implements Focusable {
 		const innerWidth = width - 2;
 		const lines: string[] = [];
 		const thoughts = this.thoughts();
+		const openCount = thoughts.filter((thought) => !thought.done).length;
+		const doneCount = thoughts.length - openCount;
+		const folderName = basename(this.options.cwd) || this.options.cwd;
 		this.clampSelection();
 
+		const borderColor = this.mode === "list" ? "border" : "borderAccent";
+		const border = (text: string): string =>
+			this.options.theme.fg(borderColor, text);
 		const fit = (text: string): string => {
 			const truncated = truncateToWidth(text, innerWidth, "…");
 			return (
@@ -433,47 +439,69 @@ export class TodoManagerComponent implements Focusable {
 				" ".repeat(Math.max(0, innerWidth - visibleWidth(truncated)))
 			);
 		};
-		const row = (text = ""): string =>
-			this.options.theme.fg("border", "│") +
-			fit(text) +
-			this.options.theme.fg("border", "│");
+		const row = (text = "", highlighted = false): string => {
+			const content = fit(text);
+			return (
+				border("│") +
+				(highlighted ? this.options.theme.bg("selectedBg", content) : content) +
+				border("│")
+			);
+		};
+		const hint = (key: string, label: string): string =>
+			`${this.options.theme.fg("accent", key)} ${this.options.theme.fg("dim", label)}`;
+		const divider = (): string => border(`├${"─".repeat(innerWidth)}┤`);
+		const modeLabel = {
+			add: "NEW",
+			view: "DETAIL",
+			list: "QUEUE",
+		}[this.mode];
+		const title = ` ${this.options.theme.fg("accent", this.options.theme.bold("◆ Mind Queue"))}`;
+		const counts = this.options.theme.fg(
+			"dim",
+			`${openCount} open · ${doneCount} done`,
+		);
+		const titleGap = " ".repeat(
+			Math.max(1, innerWidth - visibleWidth(title) - visibleWidth(counts)),
+		);
 
-		lines.push(this.options.theme.fg("border", `╭${"─".repeat(innerWidth)}╮`));
+		lines.push(border(`╭${"─".repeat(innerWidth)}╮`));
+		lines.push(row(`${title}${titleGap}${counts}`));
 		lines.push(
 			row(
-				` ${this.options.theme.fg("accent", this.options.theme.bold("Mind Queue"))}`,
+				` ${this.options.theme.bg("selectedBg", this.options.theme.fg("accent", ` ${modeLabel} `))}  ${this.options.theme.fg("dim", `${thoughts.length} thought${thoughts.length === 1 ? "" : "s"} · ${folderName} · saved automatically`)}`,
 			),
 		);
-		lines.push(
-			row(
-				` ${this.options.theme.fg("dim", `${thoughts.length} thought${thoughts.length === 1 ? "" : "s"} · saved for this project`)}`,
-			),
-		);
-		lines.push(row());
+		lines.push(divider());
 
 		if (this.mode === "add") {
 			lines.push(
 				row(
-					` ${this.options.theme.fg("accent", "Type a thought or drop files/images")}`,
+					` ${this.options.theme.fg("accent", this.options.theme.bold("Capture a thought"))}`,
 				),
 			);
 			lines.push(
 				row(
-					` ${this.options.theme.fg("dim", "Dropped items are saved as local path references")}`,
+					` ${this.options.theme.fg("muted", "Type below or drop files/images into the field")}`,
 				),
 			);
 			lines.push(row());
-			const inputLine = this.input.render(Math.max(1, innerWidth - 4))[0] ?? "";
-			lines.push(row(` > ${inputLine}`));
-			lines.push(row());
+			const inputLine = this.input.render(Math.max(1, innerWidth - 3))[0] ?? "";
+			lines.push(row(` ${inputLine}`, true));
 			lines.push(
 				row(
-					` ${this.options.theme.fg("dim", "Enter add another · Tab/Esc return to list")}`,
+					` ${this.options.theme.fg("dim", "Dropped files stay local and are saved as @path references")}`,
 				),
+			);
+			lines.push(
+				row(` ${hint("Enter", "add another")} · ${hint("Tab/Esc", "back")}`),
 			);
 		} else if (this.mode === "view") {
 			const thought = thoughts[this.selected];
-			lines.push(row(` ${this.options.theme.fg("accent", "Full thought")}`));
+			lines.push(
+				row(
+					` ${this.options.theme.fg("accent", this.options.theme.bold("Thought details"))}`,
+				),
+			);
 			if (thought) {
 				lines.push(
 					row(
@@ -485,7 +513,7 @@ export class TodoManagerComponent implements Focusable {
 					sanitizeThoughtForEditor(thought.text),
 					Math.max(1, innerWidth - 2),
 				);
-				const maxVisible = 12;
+				const maxVisible = 16;
 				const maxScroll = Math.max(0, wrapped.length - maxVisible);
 				this.viewScroll = Math.min(this.viewScroll, maxScroll);
 				const visible = wrapped.slice(
@@ -508,22 +536,21 @@ export class TodoManagerComponent implements Focusable {
 			lines.push(row());
 			lines.push(
 				row(
-					` ${this.options.theme.fg("dim", "↑↓/jk scroll · V/Tab/Esc return to queue")}`,
+					` ${hint("↑↓/jk", "scroll")} · ${hint("V/Tab/Esc", "back to queue")}`,
 				),
 			);
 		} else if (thoughts.length === 0) {
+			lines.push(row());
 			lines.push(
-				row(
-					` ${this.options.theme.fg("muted", "Your project mind queue is empty.")}`,
-				),
+				row(` ${this.options.theme.fg("muted", "◇ Nothing queued yet")}`),
 			);
 			lines.push(
 				row(
-					` ${this.options.theme.fg("dim", "Press A to capture your first thought.")}`,
+					` ${hint("A", "capture your first thought")} · ${this.options.theme.fg("dim", "it will persist across sessions")}`,
 				),
 			);
 		} else {
-			const { start, end } = this.visibleListWindow(thoughts, 10);
+			const { start, end } = this.visibleListWindow(thoughts, 14);
 			if (start > 0)
 				lines.push(row(` ${this.options.theme.fg("dim", `↑ ${start} more`)}`));
 			let renderedSessionId: string | undefined;
@@ -534,7 +561,7 @@ export class TodoManagerComponent implements Focusable {
 					renderedSessionId = thought.createdIn.id;
 					lines.push(
 						row(
-							` ${this.options.theme.fg("muted", `Session · ${formatSessionOrigin(thought.createdIn, this.options.currentSessionId)}`)}`,
+							` ${this.options.theme.fg("dim", "─")} ${this.options.theme.fg("muted", `Session · ${formatSessionOrigin(thought.createdIn, this.options.currentSessionId)}`)}`,
 						),
 					);
 				}
@@ -550,7 +577,7 @@ export class TodoManagerComponent implements Focusable {
 							this.options.theme.strikethrough(safeText),
 						)
 					: this.options.theme.fg(active ? "accent" : "text", safeText);
-				lines.push(row(` ${pointer} ${marker} ${label}`));
+				lines.push(row(` ${pointer} ${marker} ${label}`, active));
 			}
 			if (end < thoughts.length) {
 				lines.push(
@@ -561,21 +588,21 @@ export class TodoManagerComponent implements Focusable {
 			}
 		}
 
-		lines.push(row());
+		lines.push(divider());
 		if (this.mode === "list") {
 			lines.push(
 				row(
-					` ${this.options.theme.fg("dim", "A add · E edit · V view full · Enter move to editor")}`,
+					` ${hint("A", "add")} · ${hint("E", "edit")} · ${hint("V", "view full")} · ${hint("Enter", "move to editor")}`,
 				),
 			);
 			lines.push(
 				row(
-					` ${this.options.theme.fg("dim", "↑↓/jk select · D/Delete remove · X/Space done · U undo")}`,
+					` ${hint("↑↓/jk", "select")} · ${hint("X/Space", "done")} · ${hint("D/Delete", "remove")} · ${hint("U", "undo")}`,
 				),
 			);
 			lines.push(
 				row(
-					` ${this.options.theme.fg("dim", "Ctrl+Shift+M open/close · Esc close · /mind")}`,
+					` ${hint("Ctrl+Shift+M", "close")} · ${hint("Esc", "close")} · ${this.options.theme.fg("dim", "/mind")}`,
 				),
 			);
 			const undoLabel = this.options.getUndoLabel();
@@ -587,7 +614,7 @@ export class TodoManagerComponent implements Focusable {
 				);
 			}
 		}
-		lines.push(this.options.theme.fg("border", `╰${"─".repeat(innerWidth)}╯`));
+		lines.push(border(`╰${"─".repeat(innerWidth)}╯`));
 		return lines;
 	}
 
