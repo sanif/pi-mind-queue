@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import {
 	getAgentDir,
@@ -7,6 +8,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import type { KeyId } from "@earendil-works/pi-tui";
 import {
 	formatMindQueueStatus,
 	MIND_QUEUE_SHORTCUT,
@@ -67,6 +69,75 @@ class MutationUnavailableError extends Error {}
 
 export interface MindQueueOptions {
 	agentDir?: string;
+	shortcut?: KeyId;
+}
+
+interface MindQueueConfig {
+	shortcut?: unknown;
+}
+
+const SHORTCUT_MODIFIERS = new Set(["ctrl", "shift", "alt", "super"]);
+const SHORTCUT_KEYS = new Set([
+	..."abcdefghijklmnopqrstuvwxyz0123456789",
+	"escape",
+	"esc",
+	"enter",
+	"return",
+	"tab",
+	"space",
+	"backspace",
+	"delete",
+	"insert",
+	"clear",
+	"home",
+	"end",
+	"pageup",
+	"pagedown",
+	"up",
+	"down",
+	"left",
+	"right",
+	...Array.from({ length: 12 }, (_, index) => `f${index + 1}`),
+	..."`-=[]\\;',./!@#$%^&*()_|~{}:<>?",
+]);
+
+function isShortcut(value: string): value is KeyId {
+	const parts = value.toLowerCase().split("+");
+	const key = parts.pop();
+	if (!key || !SHORTCUT_KEYS.has(key)) return false;
+	const modifiers = new Set(parts);
+	return (
+		modifiers.size === parts.length &&
+		parts.every((part) => SHORTCUT_MODIFIERS.has(part))
+	);
+}
+
+function readConfiguredShortcut(agentDir: string): KeyId | undefined {
+	const configPath = join(agentDir, "extensions", "mind-queue.json");
+	if (!existsSync(configPath)) return undefined;
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(readFileSync(configPath, "utf8"));
+	} catch (error) {
+		throw new Error(`Mind Queue could not read ${configPath}`, {
+			cause: error,
+		});
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error(`Mind Queue config in ${configPath} must be a JSON object`);
+	}
+
+	const config = parsed as MindQueueConfig;
+	if (config.shortcut === undefined) return undefined;
+	const shortcut =
+		typeof config.shortcut === "string" ? config.shortcut.trim() : undefined;
+	if (!shortcut || !isShortcut(shortcut)) {
+		throw new Error(
+			`Mind Queue shortcut in ${configPath} is not a valid Pi key combination`,
+		);
+	}
+	return shortcut;
 }
 
 type MindQueueFilter = "open" | "done" | "all";
@@ -248,6 +319,9 @@ export default function mindQueue(
 	pi: ExtensionAPI,
 	options: MindQueueOptions = {},
 ) {
+	const agentDir = options.agentDir ?? getAgentDir();
+	const shortcut =
+		options.shortcut ?? readConfiguredShortcut(agentDir) ?? MIND_QUEUE_SHORTCUT;
 	const sessionCatalog: SessionCatalog = {
 		listAll: (sessionDir) =>
 			sessionDir
@@ -299,10 +373,7 @@ export default function mindQueue(
 		currentContext = ctx;
 		currentOrigin = sessionOrigin(ctx);
 		const projectRoot = resolveProjectRoot(ctx.cwd);
-		const nextStore = new MindQueueStore(
-			projectRoot,
-			options.agentDir ?? getAgentDir(),
-		);
+		const nextStore = new MindQueueStore(projectRoot, agentDir);
 		const imported = existsSync(nextStore.filePath)
 			? []
 			: await collectLegacyTodos(
@@ -597,6 +668,7 @@ export default function mindQueue(
 								}),
 							),
 						undoLast: () => undoLast(ctx),
+						shortcut,
 						done,
 					}),
 				{
@@ -756,7 +828,7 @@ export default function mindQueue(
 		},
 	});
 
-	pi.registerShortcut(MIND_QUEUE_SHORTCUT, {
+	pi.registerShortcut(shortcut, {
 		description: "Open Mind Queue",
 		handler: showTodos,
 	});

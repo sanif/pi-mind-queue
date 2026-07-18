@@ -124,6 +124,21 @@ describe("Mind Queue full thought view", () => {
 		expect(component.render(50).join("\n")).toContain("V view full");
 	});
 
+	test("uses the configured shortcut to close the queue and in its hint", () => {
+		let closed = false;
+		const { component } = createComponent("A configurable thought", undefined, {
+			shortcut: "q",
+			done: () => {
+				closed = true;
+			},
+		});
+
+		expect(component.render(50).join("\n")).toContain("Q close");
+		component.handleInput("q");
+
+		expect(closed).toBe(true);
+	});
+
 	test("groups project thoughts by their creation session and puts the current session first", () => {
 		const earlierSession: SessionOrigin = {
 			id: "aaaaaaaa-earlier",

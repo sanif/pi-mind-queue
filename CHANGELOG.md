@@ -7,6 +7,11 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- Configure the shortcut that opens and closes Mind Queue through
+  `~/.pi/agent/extensions/mind-queue.json`.
+
 ## [0.4.0] - 2026-07-18
 
 ### Added

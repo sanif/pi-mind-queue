@@ -7,6 +7,7 @@ import {
 	Input,
 	Key,
 	type Focusable,
+	type KeyId,
 	matchesKey,
 	truncateToWidth,
 	visibleWidth,
@@ -34,10 +35,22 @@ export interface TodoManagerOptions {
 	removeThought: (thought: ProjectTodo, reason: "delete" | "move") => boolean;
 	toggleThought: (thought: ProjectTodo) => boolean;
 	undoLast: () => void;
+	shortcut?: KeyId;
 	done: (result: DialogResult) => void;
 }
 
 export const MIND_QUEUE_SHORTCUT = Key.ctrlShift("m");
+
+function formatShortcut(shortcut: KeyId): string {
+	return shortcut
+		.split("+")
+		.map((part) =>
+			part.length === 1
+				? part.toUpperCase()
+				: part.charAt(0).toUpperCase() + part.slice(1),
+		)
+		.join("+");
+}
 
 export function formatMindQueueStatus(openCount: number): string | undefined {
 	return openCount > 0 ? String(openCount) : undefined;
@@ -356,7 +369,7 @@ export class TodoManagerComponent implements Focusable {
 		if (
 			matchesKey(data, Key.escape) ||
 			matchesKey(data, Key.ctrl("c")) ||
-			matchesKey(data, MIND_QUEUE_SHORTCUT)
+			matchesKey(data, this.options.shortcut ?? MIND_QUEUE_SHORTCUT)
 		) {
 			this.options.done(undefined);
 			return;
@@ -602,7 +615,7 @@ export class TodoManagerComponent implements Focusable {
 			);
 			lines.push(
 				row(
-					` ${hint("Ctrl+Shift+M", "close")} · ${hint("Esc", "close")} · ${this.options.theme.fg("dim", "/mind")}`,
+					` ${hint(formatShortcut(this.options.shortcut ?? MIND_QUEUE_SHORTCUT), "close")} · ${hint("Esc", "close")} · ${this.options.theme.fg("dim", "/mind")}`,
 				),
 			);
 			const undoLabel = this.options.getUndoLabel();

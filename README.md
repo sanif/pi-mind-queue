@@ -35,6 +35,20 @@ If you previously installed a local development copy at `~/.pi/agent/extensions/
 | Review stale thoughts | `/mind cleanup` |
 | Undo the latest change | `/mind undo` |
 
+### Change the shortcut
+
+Create `~/.pi/agent/extensions/mind-queue.json` and set `shortcut` to any
+[Pi key combination](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/keybindings.md):
+
+```json
+{
+  "shortcut": "ctrl+shift+q"
+}
+```
+
+Run `/reload` after changing the file. The configured shortcut opens Mind Queue,
+closes its overlay, and appears in the overlay hint. `/mind` remains available.
+
 ### While Mind Queue is open
 
 These keys are handled only while the Mind Queue overlay is open. They do not
@@ -50,7 +64,7 @@ change the normal Pi editor outside the overlay.
 | Remove | `D` or `Delete` |
 | Undo this session's latest change | `U` |
 | Move selection | arrow keys or `J`/`K` |
-| Close | `Esc` or `Ctrl+Shift+M` |
+| Close | `Esc` or the configured shortcut |
 
 `/mind <thought>` saves immediately, including while the agent is working.
 It does not interrupt the agent or send the command to the model; it only
