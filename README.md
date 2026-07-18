@@ -2,6 +2,9 @@
 
 Mind Queue is a project-wide scratchpad for thoughts you do not want to lose while working in [Pi](https://github.com/earendil-works/pi). Thoughts persist across sessions, retain a short creation-session label, and can be moved back into Pi's editor when they become relevant.
 
+**Images and files are supported.** Drop them into the Add screen to save local
+`@path` references alongside a thought without copying their contents.
+
 ## Install
 
 From npm (latest stable release):
