@@ -7,6 +7,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-19
+
 ### Added
 
 - Configure the shortcut that opens and closes Mind Queue through
@@ -51,7 +53,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Session labels, legacy queue migration, stale-update protection, private file
   permissions, process locking, and atomic writes.
 
-[Unreleased]: https://github.com/sanif/pi-mind-queue/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/sanif/pi-mind-queue/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/sanif/pi-mind-queue/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sanif/pi-mind-queue/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sanif/pi-mind-queue/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sanif/pi-mind-queue/compare/v0.1.0...v0.2.0
