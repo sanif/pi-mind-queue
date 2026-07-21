@@ -33,6 +33,7 @@ If you previously installed a local development copy at `~/.pi/agent/extensions/
 | Open Mind Queue | `/mind` |
 | Add while Pi is working | `/mind <thought>` |
 | Review stale thoughts | `/mind cleanup` |
+| Clear completed thoughts | `/mind clear-done` |
 | Undo the latest change | `/mind undo` |
 
 ### Change the shortcut
@@ -57,10 +58,12 @@ change the normal Pi editor outside the overlay.
 | Action | Key |
 | --- | --- |
 | Add a thought or drop local files/images | `A` |
+| Filter thoughts by text | `/` |
 | Edit in Pi's multiline editor | `E` |
 | View the complete thought | `V` |
 | Move the thought to Pi's editor | `Enter` |
 | Mark open or done | `X` or `Space` |
+| Clear all completed thoughts | `C` |
 | Remove | `D` or `Delete` |
 | Undo this session's latest change | `U` |
 | Move selection | arrow keys or `J`/`K` |
@@ -69,6 +72,14 @@ change the normal Pi editor outside the overlay.
 `/mind <thought>` saves immediately, including while the agent is working.
 It does not interrupt the agent or send the command to the model; it only
 updates the local project queue.
+
+Each thought row shows its `#id` and age (for example `3d` or `2w`)
+right-aligned, so they stay visible even when the text is long. The IDs match
+the ones the agent tool and `/mind cleanup` use, and the `V` detail view shows
+the thought's ID, open/done status, and full relative time. Press `/` to
+filter the list by thought text as you type; `Enter` or `Tab` keeps the
+filter, and `Esc` inside the filter clears it. `C` removes every completed
+thought in one step, and `U` (or `/mind undo`) restores them.
 
 In the `A` screen, drag local files or images into the terminal to add them as
 absolute `@path` references. Mind Queue does not copy or read the dropped file;

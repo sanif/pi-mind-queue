@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
 	formatMindQueueStatus,
+	formatThoughtAge,
 	TodoManagerComponent,
 	type DialogResult,
 	type TodoManagerOptions,
@@ -73,6 +74,7 @@ function createComponent(
 		removeThought: () => true,
 		toggleThought: () => true,
 		undoLast: () => {},
+		clearCompleted: () => true,
 		done: (next) => {
 			result = next;
 		},
@@ -336,6 +338,168 @@ describe("Mind Queue add attachments", () => {
 		component.handleInput("\r");
 
 		expect(addedText).toBe("plain pasted note");
+	});
+});
+
+describe("Mind Queue filter", () => {
+	test("narrows the queue live as the query is typed", () => {
+		const { component } = createComponent("ignored", [
+			thought(1, "Fix the flaky login test"),
+			thought(2, "Refactor the store"),
+		]);
+
+		component.handleInput("/");
+		component.handleInput("flaky");
+		const rendered = component.render(72).join("\n");
+
+		expect(rendered).toContain("FILTER");
+		expect(rendered).toContain("Fix the flaky login test");
+		expect(rendered).not.toContain("Refactor the store");
+		expect(rendered).toContain("1 of 2 thoughts match");
+	});
+
+	test("Enter applies the filter and Escape inside the filter clears it", () => {
+		const { component } = createComponent("ignored", [
+			thought(1, "Fix the flaky login test"),
+			thought(2, "Refactor the store"),
+		]);
+
+		component.handleInput("/");
+		component.handleInput("flaky");
+		component.handleInput("\r");
+
+		let rendered = component.render(72).join("\n");
+		expect(rendered).toContain('filter: "flaky"');
+		expect(rendered).not.toContain("Refactor the store");
+
+		component.handleInput("/");
+		component.handleInput("\u001b");
+
+		rendered = component.render(72).join("\n");
+		expect(rendered).toContain("Refactor the store");
+		expect(rendered).not.toContain('filter: "flaky"');
+	});
+
+	test("keeps the applied filter editable and shows an empty-match state", () => {
+		const { component } = createComponent("ignored", [
+			thought(1, "Fix the flaky login test"),
+		]);
+
+		component.handleInput("/");
+		component.handleInput("missing");
+		component.handleInput("\r");
+
+		const rendered = component.render(72).join("\n");
+		expect(rendered).toContain('◇ No thoughts match "missing"');
+		expect(rendered).toContain("press / then Esc to clear");
+	});
+
+	test("moves and acts within the filtered thoughts only", () => {
+		const removed: number[] = [];
+		const { component } = createComponent(
+			"ignored",
+			[
+				thought(1, "Alpha cleanup"),
+				thought(2, "Beta cleanup"),
+				thought(3, "Unrelated note"),
+			],
+			{
+				removeThought: (candidate) => {
+					removed.push(candidate.id);
+					return true;
+				},
+			},
+		);
+
+		component.handleInput("/");
+		component.handleInput("cleanup");
+		component.handleInput("\r");
+		component.handleInput("j");
+		component.handleInput("d");
+
+		expect(removed).toEqual([2]);
+	});
+});
+
+describe("Mind Queue clear completed", () => {
+	test("C clears completed thoughts through the option", () => {
+		let cleared = 0;
+		const completed = { ...thought(2, "Finished thought"), done: true };
+		const { component } = createComponent(
+			"ignored",
+			[thought(1, "Still open"), completed],
+			{
+				clearCompleted: () => {
+					cleared += 1;
+					return true;
+				},
+			},
+		);
+
+		component.handleInput("c");
+
+		expect(cleared).toBe(1);
+	});
+});
+
+describe("Mind Queue thought age", () => {
+	test("formats compact relative ages", () => {
+		const now = new Date("2026-07-20T12:00:00.000Z");
+		expect(formatThoughtAge("2026-07-20T11:59:40.000Z", now)).toBe("now");
+		expect(formatThoughtAge("2026-07-20T11:45:00.000Z", now)).toBe("15m");
+		expect(formatThoughtAge("2026-07-20T09:00:00.000Z", now)).toBe("3h");
+		expect(formatThoughtAge("2026-07-17T12:00:00.000Z", now)).toBe("3d");
+		expect(formatThoughtAge("2026-07-06T12:00:00.000Z", now)).toBe("2w");
+		expect(formatThoughtAge("2026-04-19T12:00:00.000Z", now)).toBe("3mo");
+		expect(formatThoughtAge("2024-07-19T12:00:00.000Z", now)).toBe("2y");
+		expect(formatThoughtAge("not-a-date", now)).toBe("");
+	});
+
+	test("shows the compact age in the queue and the long age in the detail view", () => {
+		const { component } = createComponent("A thought with an age");
+
+		const list = component.render(72).join("\n");
+		expect(list).toMatch(/· (now|\d+(?:m|h|d|w|mo|y))/);
+
+		component.handleInput("v");
+		const detail = component.render(72).join("\n");
+		expect(detail).toContain(
+			"Created in Current work · #bbbbbbbb · current · ",
+		);
+		expect(detail).toMatch(/(just now|\d+(?:m|h|d|w|mo|y) ago)/);
+	});
+
+	test("right-aligns the thought id and age so they survive long texts", () => {
+		const longText = "A very long thought that keeps going ".repeat(10);
+		const { component } = createComponent(longText);
+
+		const lines = component.render(50);
+		const selected = lines.find((line) => line.includes("›"));
+		if (!selected) throw new Error("Queue did not render a selected row");
+
+		expect(selected).toContain("…");
+		expect(selected).toMatch(/#1 · (now|\d+(?:m|h|d|w|mo|y))│$/);
+	});
+
+	test("shows the thought id and open status at the top of the detail view", () => {
+		const { component } = createComponent("Check its status");
+
+		component.handleInput("v");
+		const detail = component.render(72).join("\n");
+
+		expect(detail).toContain("#1");
+		expect(detail).toContain("○ Open");
+	});
+
+	test("shows a done status in the detail view for completed thoughts", () => {
+		const completed = { ...thought(3, "Finished thought"), done: true };
+		const { component } = createComponent("ignored", [completed]);
+
+		component.handleInput("v");
+		const detail = component.render(72).join("\n");
+
+		expect(detail).toContain("#3");
+		expect(detail).toContain("✓ Done");
 	});
 });
 

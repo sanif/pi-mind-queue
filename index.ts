@@ -528,6 +528,15 @@ export default function mindQueue(
 		return saved ? added : undefined;
 	};
 
+	const clearCompleted = (ctx: ExtensionContext): boolean => {
+		const doneCount = state?.todos.filter((todo) => todo.done).length ?? 0;
+		if (doneCount === 0) return false;
+		return mutate(ctx, `clear ${doneCount} done`, (draft) => {
+			draft.todos = draft.todos.filter((todo) => !todo.done);
+			return true;
+		});
+	};
+
 	const getUndoLabel = (): string | undefined => {
 		if (!state?.undo || state.undo.actorSessionId !== currentOrigin?.id)
 			return undefined;
@@ -668,6 +677,7 @@ export default function mindQueue(
 								}),
 							),
 						undoLast: () => undoLast(ctx),
+						clearCompleted: () => clearCompleted(ctx),
 						shortcut,
 						done,
 					}),
@@ -850,9 +860,26 @@ export default function mindQueue(
 		undoLast(ctx);
 	};
 
+	const runClearCompleted = async (ctx: ExtensionContext): Promise<void> => {
+		if (!(await ensureInitialized(ctx))) return;
+		currentContext = ctx;
+		refresh(ctx);
+		const doneCount = state?.todos.filter((todo) => todo.done).length ?? 0;
+		if (doneCount === 0) {
+			ctx.ui.notify("Mind Queue has no completed thoughts", "info");
+			return;
+		}
+		if (clearCompleted(ctx)) {
+			ctx.ui.notify(
+				`Cleared ${doneCount} completed thought${doneCount === 1 ? "" : "s"} from Mind Queue · /mind undo to restore`,
+				"info",
+			);
+		}
+	};
+
 	pi.registerCommand("mind", {
 		description:
-			"Open Mind Queue, add a thought, or run /mind cleanup or /mind undo",
+			"Open Mind Queue, add a thought, or run /mind cleanup, /mind clear-done, or /mind undo",
 		handler: async (args, ctx) => {
 			const text = args.trim();
 			if (!text) {
@@ -863,6 +890,10 @@ export default function mindQueue(
 			const subcommand = text.toLowerCase();
 			if (subcommand === "cleanup") {
 				requestCleanup(ctx);
+				return;
+			}
+			if (subcommand === "clear-done") {
+				await runClearCompleted(ctx);
 				return;
 			}
 			if (subcommand === "undo") {

@@ -250,6 +250,46 @@ describe("Mind Queue agent tool", () => {
 		expect(store.load().todos).toHaveLength(0);
 	});
 
+	test("clears completed thoughts through the mind subcommand and restores them with undo", async () => {
+		const { mindCommand, ctx, store, notifications } = setupTool();
+		const origin = {
+			id: "another-session",
+			name: "Another session",
+			createdAt: "2026-07-16T10:00:00.000Z",
+			persisted: true,
+		};
+		store.update((state) => {
+			state.todos.push(
+				{
+					id: state.nextId++,
+					text: "Open thought",
+					done: false,
+					createdAt: "2026-07-16T10:00:00.000Z",
+					createdIn: { ...origin },
+				},
+				{
+					id: state.nextId++,
+					text: "Done thought",
+					done: true,
+					createdAt: "2026-07-16T10:00:00.000Z",
+					createdIn: { ...origin },
+				},
+			);
+		});
+
+		await mindCommand.handler("clear-done", ctx);
+		expect(store.load().todos).toHaveLength(1);
+		expect(store.load().todos[0]?.text).toBe("Open thought");
+		expect(store.load().undo?.label).toBe("clear 1 done");
+		expect(notifications.at(-1)).toContain("Cleared 1 completed thought");
+
+		await mindCommand.handler("clear-done", ctx);
+		expect(notifications.at(-1)).toContain("no completed thoughts");
+
+		await mindCommand.handler("undo", ctx);
+		expect(store.load().todos).toHaveLength(2);
+	});
+
 	test("supports exact lookup beyond the bounded default list", async () => {
 		const { tool, ctx, store } = setupTool();
 		store.update((state) => {

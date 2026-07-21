@@ -35,6 +35,7 @@ export interface TodoManagerOptions {
 	removeThought: (thought: ProjectTodo, reason: "delete" | "move") => boolean;
 	toggleThought: (thought: ProjectTodo) => boolean;
 	undoLast: () => void;
+	clearCompleted: () => boolean;
 	shortcut?: KeyId;
 	done: (result: DialogResult) => void;
 }
@@ -65,6 +66,38 @@ export function sanitizeThoughtForEditor(text: string): string {
 
 export function sanitizeThoughtForDisplay(text: string): string {
 	return sanitizeThoughtForEditor(text).replace(/\n+/g, " ↵ ");
+}
+
+/** Format a thought's creation time as a compact relative age. */
+export function formatThoughtAge(
+	createdAt: string,
+	now: Date = new Date(),
+): string {
+	const created = new Date(createdAt).getTime();
+	if (Number.isNaN(created)) return "";
+	const seconds = Math.max(0, Math.floor((now.getTime() - created) / 1000));
+	if (seconds < 90) return "now";
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h`;
+	const days = Math.floor(hours / 24);
+	if (days < 7) return `${days}d`;
+	const weeks = Math.floor(days / 7);
+	if (weeks < 5) return `${weeks}w`;
+	const months = Math.floor(days / 30);
+	if (months < 12) return `${months}mo`;
+	return `${Math.floor(days / 365)}y`;
+}
+
+/** Format a thought's creation time as a phrase for the detail view. */
+export function formatThoughtAgeLong(
+	createdAt: string,
+	now: Date = new Date(),
+): string {
+	const age = formatThoughtAge(createdAt, now);
+	if (!age) return "";
+	return age === "now" ? "just now" : `${age} ago`;
 }
 
 function snapshot(thought: ProjectTodo): ProjectTodo {
@@ -167,13 +200,33 @@ function formatDroppedFileReferences(
 export class TodoManagerComponent implements Focusable {
 	private _focused = false;
 	private selected = 0;
-	private mode: "list" | "add" | "view" = "list";
+	private mode: "list" | "add" | "view" | "filter" = "list";
 	private viewScroll = 0;
 	private input = new Input();
+	private filterInput = new Input();
+	private filterText = "";
 	private addPasteBuffer: string | undefined;
 
 	constructor(private readonly options: TodoManagerOptions) {
 		this.configureInput();
+		this.configureFilterInput();
+	}
+
+	private configureFilterInput(): void {
+		this.filterInput.onSubmit = () => this.leaveFilterMode(true);
+		this.filterInput.onEscape = () => this.leaveFilterMode(false);
+	}
+
+	private leaveFilterMode(keepFilter: boolean): void {
+		if (!keepFilter) {
+			this.filterText = "";
+			this.filterInput = new Input();
+			this.configureFilterInput();
+		}
+		this.mode = "list";
+		this.clampSelection();
+		this.syncInputFocus();
+		this.options.requestRender();
 	}
 
 	private configureInput(): void {
@@ -208,12 +261,18 @@ export class TodoManagerComponent implements Focusable {
 
 	private syncInputFocus(): void {
 		this.input.focused = this._focused && this.mode === "add";
+		this.filterInput.focused = this._focused && this.mode === "filter";
 	}
 
 	private thoughts(): ProjectTodo[] {
-		return orderTodosBySession(
+		const ordered = orderTodosBySession(
 			this.options.getThoughts(),
 			this.options.currentSessionId,
+		);
+		const query = this.filterText.trim().toLowerCase();
+		if (!query) return ordered;
+		return ordered.filter((thought) =>
+			thought.text.toLowerCase().includes(query),
 		);
 	}
 
@@ -348,6 +407,56 @@ export class TodoManagerComponent implements Focusable {
 		}
 	}
 
+	private renderThoughtRow(
+		thought: ProjectTodo,
+		active: boolean,
+		innerWidth: number,
+		row: (text: string, highlighted?: boolean) => string,
+	): string {
+		const pointer = active ? this.options.theme.fg("accent", "›") : " ";
+		const marker = thought.done
+			? this.options.theme.fg("success", "✓")
+			: this.options.theme.fg("dim", "○");
+		const safeText = sanitizeThoughtForDisplay(thought.text);
+		const label = thought.done
+			? this.options.theme.fg(
+					"muted",
+					this.options.theme.strikethrough(safeText),
+				)
+			: this.options.theme.fg(active ? "accent" : "text", safeText);
+		const age = formatThoughtAge(thought.createdAt);
+		const meta = age ? `#${thought.id} · ${age}` : `#${thought.id}`;
+		const prefix = ` ${pointer} ${marker} `;
+		const prefixWidth = visibleWidth(prefix);
+		const metaWidth = visibleWidth(meta);
+		const labelWidth = Math.max(1, innerWidth - prefixWidth - metaWidth - 1);
+		const truncatedLabel = truncateToWidth(label, labelWidth, "…");
+		const gap = " ".repeat(
+			Math.max(
+				1,
+				innerWidth - prefixWidth - visibleWidth(truncatedLabel) - metaWidth,
+			),
+		);
+		return row(
+			`${prefix}${truncatedLabel}${gap}${this.options.theme.fg("dim", meta)}`,
+			active,
+		);
+	}
+
+	private handleFilterInput(data: string): void {
+		if (matchesKey(data, Key.tab)) {
+			this.leaveFilterMode(true);
+			return;
+		}
+		this.filterInput.handleInput(data);
+		const nextQuery = this.filterInput.getValue();
+		if (nextQuery !== this.filterText) {
+			this.filterText = nextQuery;
+			this.selected = 0;
+		}
+		this.options.requestRender();
+	}
+
 	private handleViewInput(data: string): void {
 		if (
 			matchesKey(data, Key.escape) ||
@@ -377,6 +486,17 @@ export class TodoManagerComponent implements Focusable {
 		if (data === "a" || data === "A") {
 			this.mode = "add";
 			this.resetInput();
+			this.options.requestRender();
+			return;
+		}
+		if (data === "/") {
+			this.mode = "filter";
+			this.syncInputFocus();
+			this.options.requestRender();
+			return;
+		}
+		if (data === "c" || data === "C") {
+			if (this.options.clearCompleted()) this.clampSelection();
 			this.options.requestRender();
 			return;
 		}
@@ -423,6 +543,10 @@ export class TodoManagerComponent implements Focusable {
 			}
 			return;
 		}
+		if (this.mode === "filter") {
+			this.handleFilterInput(data);
+			return;
+		}
 		if (this.mode === "view") {
 			this.handleViewInput(data);
 			return;
@@ -467,6 +591,7 @@ export class TodoManagerComponent implements Focusable {
 			add: "NEW",
 			view: "DETAIL",
 			list: "QUEUE",
+			filter: "FILTER",
 		}[this.mode];
 		const title = ` ${this.options.theme.fg("accent", this.options.theme.bold("◆ Mind Queue"))}`;
 		const counts = this.options.theme.fg(
@@ -479,9 +604,14 @@ export class TodoManagerComponent implements Focusable {
 
 		lines.push(border(`╭${"─".repeat(innerWidth)}╮`));
 		lines.push(row(`${title}${titleGap}${counts}`));
+		const totalThoughts = this.options.getThoughts().length;
+		const filterQuery = sanitizeThoughtForDisplay(this.filterText.trim());
+		const countLabel = filterQuery
+			? `${thoughts.length} of ${totalThoughts} thought${totalThoughts === 1 ? "" : "s"} · filter: "${filterQuery}"`
+			: `${thoughts.length} thought${thoughts.length === 1 ? "" : "s"}`;
 		lines.push(
 			row(
-				` ${this.options.theme.bg("selectedBg", this.options.theme.fg("accent", ` ${modeLabel} `))}  ${this.options.theme.fg("dim", `${thoughts.length} thought${thoughts.length === 1 ? "" : "s"} · ${folderName} · saved automatically`)}`,
+				` ${this.options.theme.bg("selectedBg", this.options.theme.fg("accent", ` ${modeLabel} `))}  ${this.options.theme.fg("dim", `${countLabel} · ${folderName} · saved automatically`)}`,
 			),
 		);
 		lines.push(divider());
@@ -508,6 +638,55 @@ export class TodoManagerComponent implements Focusable {
 			lines.push(
 				row(` ${hint("Enter", "add another")} · ${hint("Tab/Esc", "back")}`),
 			);
+		} else if (this.mode === "filter") {
+			lines.push(
+				row(
+					` ${this.options.theme.fg("accent", this.options.theme.bold("Filter thoughts"))}`,
+				),
+			);
+			lines.push(
+				row(
+					` ${this.options.theme.fg("muted", "Type to match thought text; the list updates live")}`,
+				),
+			);
+			lines.push(row());
+			const inputLine =
+				this.filterInput.render(Math.max(1, innerWidth - 3))[0] ?? "";
+			lines.push(row(` ${inputLine}`, true));
+			lines.push(
+				row(
+					` ${this.options.theme.fg("dim", `${thoughts.length} of ${totalThoughts} thought${totalThoughts === 1 ? "" : "s"} match`)}`,
+				),
+			);
+			const maxMatches = 8;
+			for (
+				let index = 0;
+				index < Math.min(thoughts.length, maxMatches);
+				index++
+			) {
+				const match = thoughts[index];
+				if (match)
+					lines.push(
+						this.renderThoughtRow(
+							match,
+							index === this.selected,
+							innerWidth,
+							row,
+						),
+					);
+			}
+			if (thoughts.length > maxMatches) {
+				lines.push(
+					row(
+						` ${this.options.theme.fg("dim", `↓ ${thoughts.length - maxMatches} more matches`)}`,
+					),
+				);
+			}
+			lines.push(
+				row(
+					` ${hint("Enter/Tab", "apply")} · ${hint("Esc", "clear and back")}`,
+				),
+			);
 		} else if (this.mode === "view") {
 			const thought = thoughts[this.selected];
 			lines.push(
@@ -516,9 +695,18 @@ export class TodoManagerComponent implements Focusable {
 				),
 			);
 			if (thought) {
+				const status = thought.done
+					? this.options.theme.fg("success", "✓ Done")
+					: this.options.theme.fg("accent", "○ Open");
 				lines.push(
 					row(
-						` ${this.options.theme.fg("dim", `Created in ${formatSessionOrigin(thought.createdIn, this.options.currentSessionId)}`)}`,
+						` ${this.options.theme.fg("accent", this.options.theme.bold(`#${thought.id}`))} ${this.options.theme.fg("dim", "·")} ${status}`,
+					),
+				);
+				const age = formatThoughtAgeLong(thought.createdAt);
+				lines.push(
+					row(
+						` ${this.options.theme.fg("dim", `Created in ${formatSessionOrigin(thought.createdIn, this.options.currentSessionId)}${age ? ` · ${age}` : ""}`)}`,
 					),
 				);
 				lines.push(row());
@@ -554,14 +742,27 @@ export class TodoManagerComponent implements Focusable {
 			);
 		} else if (thoughts.length === 0) {
 			lines.push(row());
-			lines.push(
-				row(` ${this.options.theme.fg("muted", "◇ Nothing queued yet")}`),
-			);
-			lines.push(
-				row(
-					` ${hint("A", "capture your first thought")} · ${this.options.theme.fg("dim", "it will persist across sessions")}`,
-				),
-			);
+			if (filterQuery) {
+				lines.push(
+					row(
+						` ${this.options.theme.fg("muted", `◇ No thoughts match "${filterQuery}"`)}`,
+					),
+				);
+				lines.push(
+					row(
+						` ${hint("/", "edit the filter")} · ${this.options.theme.fg("dim", "Esc inside the filter clears it")}`,
+					),
+				);
+			} else {
+				lines.push(
+					row(` ${this.options.theme.fg("muted", "◇ Nothing queued yet")}`),
+				);
+				lines.push(
+					row(
+						` ${hint("A", "capture your first thought")} · ${this.options.theme.fg("dim", "it will persist across sessions")}`,
+					),
+				);
+			}
 		} else {
 			const { start, end } = this.visibleListWindow(thoughts, 14);
 			if (start > 0)
@@ -578,19 +779,14 @@ export class TodoManagerComponent implements Focusable {
 						),
 					);
 				}
-				const active = index === this.selected;
-				const pointer = active ? this.options.theme.fg("accent", "›") : " ";
-				const marker = thought.done
-					? this.options.theme.fg("success", "✓")
-					: this.options.theme.fg("dim", "○");
-				const safeText = sanitizeThoughtForDisplay(thought.text);
-				const label = thought.done
-					? this.options.theme.fg(
-							"muted",
-							this.options.theme.strikethrough(safeText),
-						)
-					: this.options.theme.fg(active ? "accent" : "text", safeText);
-				lines.push(row(` ${pointer} ${marker} ${label}`, active));
+				lines.push(
+					this.renderThoughtRow(
+						thought,
+						index === this.selected,
+						innerWidth,
+						row,
+					),
+				);
 			}
 			if (end < thoughts.length) {
 				lines.push(
@@ -605,12 +801,12 @@ export class TodoManagerComponent implements Focusable {
 		if (this.mode === "list") {
 			lines.push(
 				row(
-					` ${hint("A", "add")} · ${hint("E", "edit")} · ${hint("V", "view full")} · ${hint("Enter", "move to editor")}`,
+					` ${hint("A", "add")} · ${hint("/", "filter")} · ${hint("E", "edit")} · ${hint("V", "view full")} · ${hint("Enter", "move to editor")}`,
 				),
 			);
 			lines.push(
 				row(
-					` ${hint("↑↓/jk", "select")} · ${hint("X/Space", "done")} · ${hint("D/Delete", "remove")} · ${hint("U", "undo")}`,
+					` ${hint("↑↓/jk", "select")} · ${hint("X/Space", "done")} · ${hint("C", "clear done")} · ${hint("D", "remove")} · ${hint("U", "undo")}`,
 				),
 			);
 			lines.push(
@@ -618,6 +814,13 @@ export class TodoManagerComponent implements Focusable {
 					` ${hint(formatShortcut(this.options.shortcut ?? MIND_QUEUE_SHORTCUT), "close")} · ${hint("Esc", "close")} · ${this.options.theme.fg("dim", "/mind")}`,
 				),
 			);
+			if (filterQuery) {
+				lines.push(
+					row(
+						` ${this.options.theme.fg("dim", `Filtering by "${filterQuery}" · press / then Esc to clear`)}`,
+					),
+				);
+			}
 			const undoLabel = this.options.getUndoLabel();
 			if (undoLabel) {
 				lines.push(
@@ -633,5 +836,6 @@ export class TodoManagerComponent implements Focusable {
 
 	invalidate(): void {
 		this.input.invalidate();
+		this.filterInput.invalidate();
 	}
 }
