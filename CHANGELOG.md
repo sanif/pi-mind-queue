@@ -7,6 +7,19 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-21
+
+### Added
+
+- Filter thoughts by text with `/` inside the queue; the list updates live and
+  shows how many thoughts match.
+- Clear all completed thoughts with `C` inside the queue or with
+  `/mind clear-done`; undo restores them.
+- Show each thought's `#id` and age (for example `3d` or `2w`) right-aligned
+  in the queue, where they stay visible on long texts and match the IDs used
+  by the agent tool and `/mind cleanup`; the detail view shows the thought's
+  ID, open/done status, and full relative time.
+
 ## [0.5.0] - 2026-07-19
 
 ### Added
@@ -53,7 +66,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Session labels, legacy queue migration, stale-update protection, private file
   permissions, process locking, and atomic writes.
 
-[Unreleased]: https://github.com/sanif/pi-mind-queue/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/sanif/pi-mind-queue/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/sanif/pi-mind-queue/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/sanif/pi-mind-queue/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sanif/pi-mind-queue/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sanif/pi-mind-queue/compare/v0.2.0...v0.3.0

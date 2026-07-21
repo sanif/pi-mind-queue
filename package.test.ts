@@ -31,7 +31,7 @@ describe("Pi package manifest", () => {
 	test("declares a public Pi extension package with host peers", () => {
 		const pkg = readPackage();
 		expect(pkg.name).toBe("pi-mind-queue");
-		expect(pkg.version).toBe("0.5.0");
+		expect(pkg.version).toBe("0.6.0");
 		expect(pkg.license).toBe("MIT");
 		expect(pkg.keywords).toContain("pi-package");
 		expect(pkg.pi?.extensions).toEqual(["./index.ts"]);
