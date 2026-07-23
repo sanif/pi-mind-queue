@@ -71,8 +71,11 @@ function createComponent(
 		currentSessionId: currentSession.id,
 		getUndoLabel: () => undefined,
 		addThought: () => true,
+		copyThought: () => {},
 		removeThought: () => true,
 		toggleThought: () => true,
+		toggleFocus: () => true,
+		getFocusedId: () => undefined,
 		undoLast: () => {},
 		clearCompleted: () => true,
 		done: (next) => {
@@ -274,6 +277,59 @@ describe("Mind Queue full thought view", () => {
 		component.handleInput("X");
 
 		expect(toggles).toBe(1);
+	});
+
+	test("Y copies the selected thought through the option", () => {
+		let copied: ProjectTodo | undefined;
+		const { component } = createComponent("Copy me", undefined, {
+			copyThought: (thought) => {
+				copied = thought;
+			},
+		});
+
+		component.handleInput("Y");
+
+		expect(copied).toMatchObject({ id: 1, text: "Copy me" });
+		expect(component.render(88).join("\n")).toContain("Y copy");
+	});
+
+	test("F toggles focus through the option", () => {
+		let focusedId: number | undefined;
+		const { component } = createComponent("Focus me", undefined, {
+			toggleFocus: (candidate) => {
+				focusedId = focusedId === candidate.id ? undefined : candidate.id;
+				return true;
+			},
+			getFocusedId: () => focusedId,
+		});
+
+		component.handleInput("F");
+		expect(focusedId).toBe(1);
+
+		component.handleInput("f");
+		expect(focusedId).toBeUndefined();
+	});
+
+	test("shows a focused open thought with the focus marker", () => {
+		const { component } = createComponent("Pinned thought", undefined, {
+			getFocusedId: () => 1,
+		});
+
+		const rendered = component.render(72).join("\n");
+
+		expect(rendered).toContain("◆");
+		expect(rendered).toContain("Pinned thought");
+	});
+
+	test("shows focus in the detail view", () => {
+		const { component } = createComponent("Pinned thought", undefined, {
+			getFocusedId: () => 1,
+		});
+
+		component.handleInput("V");
+		const detail = component.render(72).join("\n");
+
+		expect(detail).toContain("◆ Focused");
 	});
 
 	test("keeps the queue open when moving a thought cannot be persisted", () => {

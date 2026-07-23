@@ -7,6 +7,19 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-23
+
+### Added
+
+- Focus one thought in Pi's status bar with `/mind focus <id>` or `F` in the
+  queue, and clear it with bare `/mind focus`; focus also clears automatically
+  when the thought is completed, moved, or removed, and undo restores it.
+- Refresh the status bar after each agent turn, so a focus set from another
+  Pi session shows up without reloading.
+- Copy the selected thought to the clipboard with `Y` without removing it from
+  the queue.
+- Prevent duplicate open thoughts and show the existing thought ID instead.
+
 ## [0.6.0] - 2026-07-21
 
 ### Added
@@ -66,7 +79,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Session labels, legacy queue migration, stale-update protection, private file
   permissions, process locking, and atomic writes.
 
-[Unreleased]: https://github.com/sanif/pi-mind-queue/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/sanif/pi-mind-queue/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/sanif/pi-mind-queue/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/sanif/pi-mind-queue/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/sanif/pi-mind-queue/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sanif/pi-mind-queue/compare/v0.3.0...v0.4.0

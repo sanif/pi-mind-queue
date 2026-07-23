@@ -51,7 +51,10 @@ afterEach(() => {
 	}
 });
 
-function setupTool(onSetStatus: () => void = () => {}, isIdle = true) {
+function setupTool(
+	onSetStatus: (name: string, value: string | undefined) => void = () => {},
+	isIdle = true,
+) {
 	const root = mkdtempSync(join(tmpdir(), "mind-queue-tool-"));
 	tempDirectories.push(root);
 	const project = join(root, "project");
@@ -66,6 +69,10 @@ function setupTool(onSetStatus: () => void = () => {}, isIdle = true) {
 		content: string;
 		deliverAs?: "steer" | "followUp";
 	}> = [];
+	const eventHandlers = new Map<
+		string,
+		(event: unknown, ctx: unknown) => void
+	>();
 	const pi = {
 		registerTool(tool: unknown) {
 			if ((tool as { name?: string }).name === "mind_queue") {
@@ -84,12 +91,15 @@ function setupTool(onSetStatus: () => void = () => {}, isIdle = true) {
 		) {
 			sentMessages.push({ content, deliverAs: options?.deliverAs });
 		},
-		on() {},
+		on(name: string, handler: (event: unknown, ctx: unknown) => void) {
+			eventHandlers.set(name, handler);
+		},
 	} as unknown as ExtensionAPI;
 	mindQueue(pi, { agentDir });
 	if (!captured) throw new Error("Mind Queue did not register its agent tool");
 
 	const notifications: string[] = [];
+	const statuses: Array<{ name: string; value: string | undefined }> = [];
 	const ctx = {
 		cwd: project,
 		isIdle: () => isIdle,
@@ -107,7 +117,10 @@ function setupTool(onSetStatus: () => void = () => {}, isIdle = true) {
 			theme: {
 				fg: (_color: string, text: string) => text,
 			},
-			setStatus: onSetStatus,
+			setStatus: (name: string, value: string | undefined) => {
+				statuses.push({ name, value });
+				onSetStatus(name, value);
+			},
 			notify: (message: string) => notifications.push(message),
 		},
 	} as unknown as ExtensionContext;
@@ -121,7 +134,9 @@ function setupTool(onSetStatus: () => void = () => {}, isIdle = true) {
 		ctx: ctx as unknown as ExtensionCommandContext,
 		store,
 		notifications,
+		statuses,
 		sentMessages,
+		eventHandlers,
 	};
 }
 
@@ -181,6 +196,39 @@ describe("Mind Queue agent tool", () => {
 		expect(details(done).openCount).toBe(0);
 	});
 
+	test("rejects duplicate open thoughts but allows a completed thought to recur", async () => {
+		const { tool, ctx, store } = setupTool();
+		await callTool(tool, ctx, { action: "add", text: "Review the flow" });
+
+		let rejection: unknown;
+		try {
+			await callTool(tool, ctx, { action: "add", text: "Review the flow" });
+		} catch (error) {
+			rejection = error;
+		}
+		if (!(rejection instanceof Error)) {
+			throw new Error("Mind Queue added a duplicate open thought");
+		}
+		expect(rejection.message).toBe(
+			"Mind Queue thought is already queued as #1",
+		);
+		expect(store.load().todos).toHaveLength(1);
+
+		const listed = await callTool(tool, ctx, { action: "list", filter: "all" });
+		const existing = details(listed).items[0];
+		await callTool(tool, ctx, {
+			action: "set_status",
+			id: existing?.id,
+			status: "done",
+			revision: existing?.revision,
+		});
+		const repeated = await callTool(tool, ctx, {
+			action: "add",
+			text: "Review the flow",
+		});
+		expect(details(repeated).items[0]?.id).toBe(2);
+	});
+
 	test("removes only a revision-checked thought with explicit confirmation", async () => {
 		const { tool, ctx, store } = setupTool();
 		expect(tool.promptGuidelines?.join(" ")).toContain("explicitly confirms");
@@ -238,6 +286,17 @@ describe("Mind Queue agent tool", () => {
 		expect(busy.sentMessages[0]?.deliverAs).toBe("followUp");
 	});
 
+	test("warns instead of adding a duplicate open thought", async () => {
+		const { mindCommand, ctx, store, notifications } = setupTool();
+		await mindCommand.handler("Review the authentication flow", ctx);
+		await mindCommand.handler("Review the authentication flow", ctx);
+
+		expect(store.load().todos).toHaveLength(1);
+		expect(notifications.at(-1)).toBe(
+			"Mind Queue thought is already queued as #1",
+		);
+	});
+
 	test("undoes the latest mutation through the mind subcommand", async () => {
 		const { tool, mindCommand, ctx, store } = setupTool();
 		await callTool(tool, ctx, {
@@ -288,6 +347,127 @@ describe("Mind Queue agent tool", () => {
 
 		await mindCommand.handler("undo", ctx);
 		expect(store.load().todos).toHaveLength(2);
+	});
+
+	test("pins and clears a focused thought through the mind subcommand", async () => {
+		const { mindCommand, ctx, store, notifications, statuses } = setupTool();
+		await mindCommand.handler(
+			"Read\nfocused\tstatus text that should be shortened",
+			ctx,
+		);
+
+		await mindCommand.handler("focus 1", ctx);
+
+		expect(store.load().focusedId).toBe(1);
+		expect(notifications.at(-1)).toBe(
+			"Focused thought #1 · /mind focus to clear",
+		);
+		expect(statuses.at(-1)).toMatchObject({
+			name: "mind-queue",
+			value: "▸ Read focused status text th… · 1",
+		});
+
+		await mindCommand.handler("focus", ctx);
+		expect(store.load().focusedId).toBeUndefined();
+		expect(notifications.at(-1)).toBe("Cleared the focused thought");
+		expect(statuses.at(-1)).toMatchObject({ name: "mind-queue", value: "1" });
+
+		await mindCommand.handler("focus", ctx);
+		expect(notifications.at(-1)).toBe("No thought is focused");
+	});
+
+	test("marking a focused thought done clears focus and undo restores it", async () => {
+		const { tool, mindCommand, ctx, store } = setupTool();
+		await callTool(tool, ctx, {
+			action: "add",
+			text: "Focused status thought",
+		});
+		await mindCommand.handler("focus 1", ctx);
+		expect(store.load().focusedId).toBe(1);
+
+		const listed = await callTool(tool, ctx, {
+			action: "list",
+			filter: "all",
+		});
+		const snapshot = details(listed).items[0];
+		await callTool(tool, ctx, {
+			action: "set_status",
+			id: snapshot?.id,
+			status: "done",
+			revision: snapshot?.revision,
+		});
+		expect(store.load().focusedId).toBeUndefined();
+		expect(store.load().todos[0]?.done).toBe(true);
+
+		await mindCommand.handler("undo", ctx);
+		expect(store.load().focusedId).toBe(1);
+		expect(store.load().todos[0]?.done).toBe(false);
+	});
+
+	test("rejects focusing a completed thought", async () => {
+		const { tool, mindCommand, ctx, store, notifications } = setupTool();
+		await callTool(tool, ctx, {
+			action: "add",
+			text: "Already finished",
+		});
+		const listed = await callTool(tool, ctx, {
+			action: "list",
+			filter: "all",
+		});
+		const snapshot = details(listed).items[0];
+		await callTool(tool, ctx, {
+			action: "set_status",
+			id: snapshot?.id,
+			status: "done",
+			revision: snapshot?.revision,
+		});
+
+		await mindCommand.handler("focus 1", ctx);
+
+		expect(store.load().focusedId).toBeUndefined();
+		expect(notifications.at(-1)).toContain("already done");
+	});
+
+	test("treats a focused id that no longer exists as unfocused", async () => {
+		const { mindCommand, ctx, store, notifications } = setupTool();
+		store.update((state) => {
+			state.focusedId = 999;
+		});
+
+		await mindCommand.handler("focus", ctx);
+
+		expect(notifications.at(-1)).toBe("No thought is focused");
+	});
+
+	test("truncates emoji status text to a safe display width", async () => {
+		const { mindCommand, ctx, statuses } = setupTool();
+		await mindCommand.handler("\u{1F680}".repeat(40), ctx);
+		await mindCommand.handler("focus 1", ctx);
+
+		const status = statuses.at(-1)?.value ?? "";
+		expect(status).toContain("…");
+		expect(status).not.toMatch(
+			/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
+		);
+		expect(status.length).toBeLessThanOrEqual(34);
+	});
+
+	test("refreshes the status bar with focus set by another session when the agent settles", async () => {
+		const { mindCommand, ctx, store, statuses, eventHandlers } = setupTool();
+		await mindCommand.handler("Thought focused elsewhere", ctx);
+		const settled = eventHandlers.get("agent_settled");
+		if (!settled) {
+			throw new Error("Mind Queue did not subscribe to agent_settled");
+		}
+		expect(statuses.at(-1)?.value).toBe("1");
+
+		store.update((state) => {
+			state.focusedId = 1;
+		});
+		expect(statuses.at(-1)?.value).toBe("1");
+
+		settled({ type: "agent_settled" }, ctx);
+		expect(statuses.at(-1)?.value).toBe("▸ Thought focused elsewhere · 1");
 	});
 
 	test("supports exact lookup beyond the bounded default list", async () => {

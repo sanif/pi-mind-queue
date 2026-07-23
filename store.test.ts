@@ -12,16 +12,19 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
 	MindQueueStore,
+	assertProjectState,
 	extractLegacyTodos,
 	getProjectStorePath,
 	mutateThoughtIfCurrent,
+	type ProjectQueueState,
 	type SessionOrigin,
 } from "./store";
 
 const tempDirs: string[] = [];
 const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
-const flockPath = ["/usr/bin/flock", "/bin/flock", "/usr/local/bin/flock"]
-	.find((path) => existsSync(path));
+const flockPath = ["/usr/bin/flock", "/bin/flock", "/usr/local/bin/flock"].find(
+	(path) => existsSync(path),
+);
 const lockUtility = existsSync("/usr/bin/lockf")
 	? { path: "/usr/bin/lockf", kind: "lockf" as const }
 	: flockPath
@@ -31,9 +34,10 @@ const lockUtility = existsSync("/usr/bin/lockf")
 function spawnLockHolder(lockPath: string, readyPath: string) {
 	if (!lockUtility) return undefined;
 	const script = 'umask 077; : > "$READY"; sleep 5';
-	const args = lockUtility.kind === "lockf"
-		? ["-k", lockPath, "/bin/sh", "-c", script]
-		: ["-x", lockPath, "/bin/sh", "-c", script];
+	const args =
+		lockUtility.kind === "lockf"
+			? ["-k", lockPath, "/bin/sh", "-c", script]
+			: ["-x", lockPath, "/bin/sh", "-c", script];
 	return spawn(lockUtility.path, args, {
 		env: { ...process.env, READY: readyPath },
 		stdio: "ignore",
@@ -42,16 +46,18 @@ function spawnLockHolder(lockPath: string, readyPath: string) {
 
 function probeLock(lockPath: string) {
 	if (!lockUtility) return undefined;
-	const args = lockUtility.kind === "lockf"
-		? ["-t", "0", "-k", lockPath, "/usr/bin/true"]
-		: ["-n", lockPath, "/usr/bin/true"];
+	const args =
+		lockUtility.kind === "lockf"
+			? ["-t", "0", "-k", lockPath, "/usr/bin/true"]
+			: ["-n", lockPath, "/usr/bin/true"];
 	return spawnSync(lockUtility.path, args, { stdio: "ignore" });
 }
 
 function waitForFile(path: string, timeoutMs = 1_000): void {
 	const deadline = Date.now() + timeoutMs;
 	while (!existsSync(path)) {
-		if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${path}`);
+		if (Date.now() >= deadline)
+			throw new Error(`Timed out waiting for ${path}`);
 		Atomics.wait(waitBuffer, 0, 0, 5);
 	}
 }
@@ -63,7 +69,8 @@ function makeTempDir(): string {
 }
 
 afterEach(() => {
-	for (const directory of tempDirs.splice(0)) rmSync(directory, { recursive: true, force: true });
+	for (const directory of tempDirs.splice(0))
+		rmSync(directory, { recursive: true, force: true });
 });
 
 const origin: SessionOrigin = {
@@ -126,7 +133,9 @@ describe("MindQueueStore", () => {
 		mkdirSync(first);
 		mkdirSync(second);
 
-		expect(getProjectStorePath(first, agentDir)).not.toBe(getProjectStorePath(second, agentDir));
+		expect(getProjectStorePath(first, agentDir)).not.toBe(
+			getProjectStorePath(second, agentDir),
+		);
 	});
 
 	test("repairs an existing store file to private permissions when loading it", () => {
@@ -149,7 +158,10 @@ describe("MindQueueStore", () => {
 		const agentDir = join(root, "agent");
 		const projectDir = join(root, "project");
 		mkdirSync(projectDir);
-		const store = new MindQueueStore(projectDir, agentDir, { lockTimeoutMs: 50, lockRetryMs: 5 });
+		const store = new MindQueueStore(projectDir, agentDir, {
+			lockTimeoutMs: 50,
+			lockRetryMs: 5,
+		});
 		mkdirSync(dirname(store.filePath), { recursive: true });
 		const lockPath = `${store.filePath}.lock`;
 		const readyPath = `${lockPath}.test-ready`;
@@ -158,7 +170,9 @@ describe("MindQueueStore", () => {
 
 		try {
 			waitForFile(readyPath);
-			expect(() => store.initialize()).toThrow("Timed out waiting for Mind Queue store lock");
+			expect(() => store.initialize()).toThrow(
+				"Timed out waiting for Mind Queue store lock",
+			);
 			expect(existsSync(lockPath)).toBe(true);
 		} finally {
 			holder.kill("SIGTERM");
@@ -221,20 +235,104 @@ describe("MindQueueStore", () => {
 		const agentDir = join(root, "agent");
 		const projectDir = join(root, "project");
 		mkdirSync(projectDir);
-		const imported = [{
-			text: "Only once",
-			done: false,
-			createdAt: "2026-07-13T10:05:00.000Z",
-			createdIn: origin,
-			legacyKey: "session-alpha-1234:1",
-		}];
+		const imported = [
+			{
+				text: "Only once",
+				done: false,
+				createdAt: "2026-07-13T10:05:00.000Z",
+				createdIn: origin,
+				legacyKey: "session-alpha-1234:1",
+			},
+		];
 
 		const first = new MindQueueStore(projectDir, agentDir).initialize(imported);
-		const second = new MindQueueStore(projectDir, agentDir).initialize(imported);
+		const second = new MindQueueStore(projectDir, agentDir).initialize(
+			imported,
+		);
 
 		expect(first.importedCount).toBe(1);
 		expect(second.importedCount).toBe(0);
 		expect(second.state.todos).toHaveLength(1);
+	});
+
+	test("persists the focused thought id in state and undo snapshots", () => {
+		const root = makeTempDir();
+		const agentDir = join(root, "agent");
+		const projectDir = join(root, "project");
+		mkdirSync(projectDir);
+		const store = new MindQueueStore(projectDir, agentDir);
+		store.initialize([
+			{
+				text: "Focusable thought",
+				done: false,
+				createdAt: "2026-07-13T10:05:00.000Z",
+				createdIn: origin,
+				legacyKey: "session-alpha-1234:1",
+			},
+		]);
+
+		store.update((state) => {
+			state.focusedId = 1;
+			state.undo = {
+				operationId: "operation-focus",
+				actorSessionId: origin.id,
+				label: "focus",
+				nextId: state.nextId,
+				todos: state.todos,
+				focusedId: 1,
+			};
+		});
+
+		const loaded = store.load();
+		expect(loaded.focusedId).toBe(1);
+		expect(loaded.undo?.focusedId).toBe(1);
+	});
+
+	test("rejects invalid focused thought ids", () => {
+		const projectPath = "/project";
+		const valid: ProjectQueueState = {
+			version: 1,
+			projectPath,
+			nextId: 2,
+			todos: [
+				{
+					id: 1,
+					text: "Focusable thought",
+					done: false,
+					createdAt: "2026-07-13T10:05:00.000Z",
+					createdIn: origin,
+				},
+			],
+			legacyMigration: {
+				version: 1,
+				completedAt: "2026-07-13T10:05:00.000Z",
+				importedKeys: [],
+			},
+			updatedAt: "2026-07-13T10:05:00.000Z",
+		};
+
+		assertProjectState({ ...valid, focusedId: 1 }, projectPath);
+		for (const focusedId of [1.5, 0]) {
+			expect(() =>
+				assertProjectState({ ...valid, focusedId }, projectPath),
+			).toThrow("invalid focused thought");
+			expect(() =>
+				assertProjectState(
+					{
+						...valid,
+						undo: {
+							operationId: "operation-focus",
+							actorSessionId: origin.id,
+							label: "focus",
+							nextId: valid.nextId,
+							todos: valid.todos,
+							focusedId,
+						},
+					},
+					projectPath,
+				),
+			).toThrow("invalid undo state");
+		}
 	});
 });
 
@@ -287,7 +385,11 @@ describe("legacy session migration", () => {
 			{
 				id: "entry-one",
 				timestamp: "2026-07-13T10:05:00.000Z",
-				data: { version: 1, nextId: 2, todos: [{ id: 1, text: "Removed", done: false }] },
+				data: {
+					version: 1,
+					nextId: 2,
+					todos: [{ id: 1, text: "Removed", done: false }],
+				},
 			},
 			{
 				id: "entry-two",

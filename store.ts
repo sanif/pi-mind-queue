@@ -52,6 +52,7 @@ export interface ProjectUndoState {
 	label: string;
 	nextId: number;
 	todos: ProjectTodo[];
+	focusedId?: number;
 	editorInsertion?: EditorInsertion;
 }
 
@@ -60,6 +61,7 @@ export interface ProjectQueueState {
 	projectPath: string;
 	nextId: number;
 	todos: ProjectTodo[];
+	focusedId?: number;
 	undo?: ProjectUndoState;
 	sessionLabelsVersion?: 1 | 2;
 	legacyMigration: {
@@ -122,8 +124,9 @@ function detectLockCommand(): LockCommand | undefined {
 	if (process.platform === "darwin" && existsSync("/usr/bin/lockf")) {
 		return { path: "/usr/bin/lockf", kind: "lockf" };
 	}
-	const flock = ["/usr/bin/flock", "/bin/flock", "/usr/local/bin/flock"]
-		.find((path) => existsSync(path));
+	const flock = ["/usr/bin/flock", "/bin/flock", "/usr/local/bin/flock"].find(
+		(path) => existsSync(path),
+	);
 	return flock ? { path: flock, kind: "flock" } : undefined;
 }
 
@@ -135,15 +138,22 @@ function cloneOrigin(origin: SessionOrigin): SessionOrigin {
 }
 
 export function cloneTodos(todos: ProjectTodo[]): ProjectTodo[] {
-	return todos.map((todo) => ({ ...todo, createdIn: cloneOrigin(todo.createdIn) }));
+	return todos.map((todo) => ({
+		...todo,
+		createdIn: cloneOrigin(todo.createdIn),
+	}));
 }
 
-export function cloneUndo(undo: ProjectUndoState | undefined): ProjectUndoState | undefined {
+export function cloneUndo(
+	undo: ProjectUndoState | undefined,
+): ProjectUndoState | undefined {
 	if (!undo) return undefined;
 	return {
 		...undo,
 		todos: cloneTodos(undo.todos),
-		editorInsertion: undo.editorInsertion ? { ...undo.editorInsertion } : undefined,
+		editorInsertion: undo.editorInsertion
+			? { ...undo.editorInsertion }
+			: undefined,
 	};
 }
 
@@ -158,7 +168,8 @@ export function mutateThoughtIfCurrent(
 		!current ||
 		current.text !== expected.text ||
 		current.done !== expected.done
-	) return false;
+	)
+		return false;
 	mutation(current, index);
 	return true;
 }
@@ -207,14 +218,26 @@ export function resolveProjectRoot(cwd: string): string {
 	}
 }
 
-export function getProjectStorePath(projectPath: string, agentDir: string): string {
+export function getProjectStorePath(
+	projectPath: string,
+	agentDir: string,
+): string {
 	const canonicalProject = canonicalPath(projectPath);
-	const hash = createHash("sha256").update(canonicalProject).digest("hex").slice(0, 24);
-	const slug = (basename(canonicalProject) || "project")
-		.replace(/[^a-zA-Z0-9._-]+/g, "-")
-		.replace(/^-+|-+$/g, "")
-		.slice(0, 48) || "project";
-	return join(canonicalPath(agentDir), "state", "mind-queue", `${slug}-${hash}.json`);
+	const hash = createHash("sha256")
+		.update(canonicalProject)
+		.digest("hex")
+		.slice(0, 24);
+	const slug =
+		(basename(canonicalProject) || "project")
+			.replace(/[^a-zA-Z0-9._-]+/g, "-")
+			.replace(/^-+|-+$/g, "")
+			.slice(0, 48) || "project";
+	return join(
+		canonicalPath(agentDir),
+		"state",
+		"mind-queue",
+		`${slug}-${hash}.json`,
+	);
 }
 
 function isSessionOrigin(value: unknown): value is SessionOrigin {
@@ -224,7 +247,8 @@ function isSessionOrigin(value: unknown): value is SessionOrigin {
 		typeof origin.id === "string" &&
 		origin.id.length > 0 &&
 		(origin.name === undefined || typeof origin.name === "string") &&
-		(origin.description === undefined || typeof origin.description === "string") &&
+		(origin.description === undefined ||
+			typeof origin.description === "string") &&
 		typeof origin.createdAt === "string" &&
 		typeof origin.persisted === "boolean"
 	);
@@ -251,7 +275,15 @@ function isProjectTodoArray(value: unknown): value is ProjectTodo[] {
 function isEditorInsertion(value: unknown): value is EditorInsertion {
 	if (!value || typeof value !== "object") return false;
 	const insertion = value as Partial<EditorInsertion>;
-	return Number.isInteger(insertion.position) && (insertion.position ?? -1) >= 0 && typeof insertion.text === "string";
+	return (
+		Number.isInteger(insertion.position) &&
+		(insertion.position ?? -1) >= 0 &&
+		typeof insertion.text === "string"
+	);
+}
+
+function isFocusedId(value: unknown): value is number {
+	return Number.isInteger(value) && (value as number) > 0;
 }
 
 function isProjectUndo(value: unknown): value is ProjectUndoState {
@@ -266,12 +298,18 @@ function isProjectUndo(value: unknown): value is ProjectUndoState {
 		Number.isInteger(undo.nextId) &&
 		(undo.nextId ?? 0) > 0 &&
 		isProjectTodoArray(undo.todos) &&
-		(undo.editorInsertion === undefined || isEditorInsertion(undo.editorInsertion))
+		(undo.focusedId === undefined || isFocusedId(undo.focusedId)) &&
+		(undo.editorInsertion === undefined ||
+			isEditorInsertion(undo.editorInsertion))
 	);
 }
 
-function assertProjectState(value: unknown, expectedProjectPath: string): asserts value is ProjectQueueState {
-	if (!value || typeof value !== "object") throw new Error("Mind Queue store is not a JSON object");
+export function assertProjectState(
+	value: unknown,
+	expectedProjectPath: string,
+): asserts value is ProjectQueueState {
+	if (!value || typeof value !== "object")
+		throw new Error("Mind Queue store is not a JSON object");
 	const state = value as Partial<ProjectQueueState>;
 	const migration = state.legacyMigration;
 	let maxId = 0;
@@ -281,11 +319,20 @@ function assertProjectState(value: unknown, expectedProjectPath: string): assert
 		}
 	}
 
-	if (state.version !== STORE_VERSION) throw new Error(`Unsupported Mind Queue store version: ${String(state.version)}`);
-	if (state.projectPath !== expectedProjectPath) throw new Error("Mind Queue store belongs to a different project");
-	if (!Number.isInteger(state.nextId) || (state.nextId ?? 0) <= maxId) throw new Error("Mind Queue store has an invalid nextId");
-	if (!isProjectTodoArray(state.todos)) throw new Error("Mind Queue store has invalid thoughts");
-	if (state.undo !== undefined && !isProjectUndo(state.undo)) throw new Error("Mind Queue store has invalid undo state");
+	if (state.version !== STORE_VERSION)
+		throw new Error(
+			`Unsupported Mind Queue store version: ${String(state.version)}`,
+		);
+	if (state.projectPath !== expectedProjectPath)
+		throw new Error("Mind Queue store belongs to a different project");
+	if (!Number.isInteger(state.nextId) || (state.nextId ?? 0) <= maxId)
+		throw new Error("Mind Queue store has an invalid nextId");
+	if (!isProjectTodoArray(state.todos))
+		throw new Error("Mind Queue store has invalid thoughts");
+	if (state.focusedId !== undefined && !isFocusedId(state.focusedId))
+		throw new Error("Mind Queue store has an invalid focused thought");
+	if (state.undo !== undefined && !isProjectUndo(state.undo))
+		throw new Error("Mind Queue store has invalid undo state");
 	if (
 		state.sessionLabelsVersion !== undefined &&
 		state.sessionLabelsVersion !== 1 &&
@@ -299,8 +346,10 @@ function assertProjectState(value: unknown, expectedProjectPath: string): assert
 		typeof migration.completedAt !== "string" ||
 		!Array.isArray(migration.importedKeys) ||
 		!migration.importedKeys.every((key) => typeof key === "string")
-	) throw new Error("Mind Queue store has invalid migration metadata");
-	if (typeof state.updatedAt !== "string") throw new Error("Mind Queue store has an invalid update time");
+	)
+		throw new Error("Mind Queue store has invalid migration metadata");
+	if (typeof state.updatedAt !== "string")
+		throw new Error("Mind Queue store has an invalid update time");
 }
 
 function ensurePrivateDirectory(path: string): void {
@@ -328,7 +377,8 @@ function acquireKernelLock(
 	const deadline = Date.now() + options.lockTimeoutMs;
 
 	while (true) {
-		const commandArgs = command.kind === "lockf" ? ["-t", "0", "3"] : ["-n", "3"];
+		const commandArgs =
+			command.kind === "lockf" ? ["-t", "0", "3"] : ["-n", "3"];
 		const result = spawnSync(command.path, commandArgs, {
 			stdio: ["ignore", "ignore", "ignore", descriptor],
 		});
@@ -339,13 +389,18 @@ function acquireKernelLock(
 		if (result.status === 0) return { descriptor };
 		if (Date.now() >= deadline) {
 			closeSync(descriptor);
-			throw new Error(`Timed out waiting for Mind Queue store lock: ${lockPath}`);
+			throw new Error(
+				`Timed out waiting for Mind Queue store lock: ${lockPath}`,
+			);
 		}
 		sleepSync(options.lockRetryMs);
 	}
 }
 
-function acquireLock(lockPath: string, options: ResolvedStoreOptions): HeldLock {
+function acquireLock(
+	lockPath: string,
+	options: ResolvedStoreOptions,
+): HeldLock {
 	if (!LOCK_COMMAND) {
 		throw new Error(
 			"Mind Queue requires lockf on macOS or flock on Linux for safe project storage",
@@ -358,7 +413,11 @@ function releaseLock(lock: HeldLock): void {
 	closeSync(lock.descriptor);
 }
 
-function withLock<T>(filePath: string, options: ResolvedStoreOptions, operation: () => T): T {
+function withLock<T>(
+	filePath: string,
+	options: ResolvedStoreOptions,
+	operation: () => T,
+): T {
 	ensurePrivateDirectory(dirname(filePath));
 	const lockPath = `${filePath}.lock`;
 	const lock = acquireLock(lockPath, options);
@@ -376,7 +435,13 @@ function syncDirectory(path: string): void {
 		fsyncSync(descriptor);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EPERM" && code !== "EISDIR") throw error;
+		if (
+			code !== "EINVAL" &&
+			code !== "ENOTSUP" &&
+			code !== "EPERM" &&
+			code !== "EISDIR"
+		)
+			throw error;
 	} finally {
 		if (descriptor !== undefined) closeSync(descriptor);
 	}
@@ -417,7 +482,9 @@ function readState(filePath: string, projectPath: string): ProjectQueueState {
 		chmodSync(filePath, 0o600);
 		parsed = JSON.parse(readFileSync(filePath, "utf8"));
 	} catch (error) {
-		throw new Error(`Could not read Mind Queue store ${filePath}: ${(error as Error).message}`);
+		throw new Error(
+			`Could not read Mind Queue store ${filePath}: ${(error as Error).message}`,
+		);
 	}
 	assertProjectState(parsed, projectPath);
 	return cloneState(parsed);
@@ -428,11 +495,16 @@ export class MindQueueStore {
 	readonly filePath: string;
 	private readonly options: ResolvedStoreOptions;
 
-	constructor(projectPath: string, agentDir: string, options: MindQueueStoreOptions = {}) {
+	constructor(
+		projectPath: string,
+		agentDir: string,
+		options: MindQueueStoreOptions = {},
+	) {
 		this.projectPath = canonicalPath(projectPath);
 		this.filePath = getProjectStorePath(this.projectPath, agentDir);
 		this.options = {
-			lockTimeoutMs: options.lockTimeoutMs ?? DEFAULT_STORE_OPTIONS.lockTimeoutMs,
+			lockTimeoutMs:
+				options.lockTimeoutMs ?? DEFAULT_STORE_OPTIONS.lockTimeoutMs,
 			lockRetryMs: options.lockRetryMs ?? DEFAULT_STORE_OPTIONS.lockRetryMs,
 		};
 	}
@@ -440,7 +512,11 @@ export class MindQueueStore {
 	initialize(importedTodos: ImportedTodo[] = []): InitializeResult {
 		return withLock(this.filePath, this.options, () => {
 			if (existsSync(this.filePath)) {
-				return { state: readState(this.filePath, this.projectPath), created: false, importedCount: 0 };
+				return {
+					state: readState(this.filePath, this.projectPath),
+					created: false,
+					importedCount: 0,
+				};
 			}
 
 			const now = new Date().toISOString();
@@ -475,7 +551,11 @@ export class MindQueueStore {
 				updatedAt: now,
 			};
 			writeStateAtomic(this.filePath, state);
-			return { state: cloneState(state), created: true, importedCount: todos.length };
+			return {
+				state: cloneState(state),
+				created: true,
+				importedCount: todos.length,
+			};
 		});
 	}
 
@@ -521,8 +601,13 @@ function isLegacyPersistedState(value: unknown): value is LegacyPersistedState {
 }
 
 /** Convert the final visible legacy queue from one session into project-store imports. */
-export function extractLegacyTodos(origin: SessionOrigin, entries: LegacyStateEntry[]): ImportedTodo[] {
-	const validEntries = entries.filter((entry) => isLegacyPersistedState(entry.data));
+export function extractLegacyTodos(
+	origin: SessionOrigin,
+	entries: LegacyStateEntry[],
+): ImportedTodo[] {
+	const validEntries = entries.filter((entry) =>
+		isLegacyPersistedState(entry.data),
+	);
 	const latest = validEntries.at(-1);
 	if (!latest || !isLegacyPersistedState(latest.data)) return [];
 
@@ -543,12 +628,14 @@ export function extractLegacyTodos(origin: SessionOrigin, entries: LegacyStateEn
 	}));
 }
 
-export function normalizeSessionLabel(value: string | undefined): string | undefined {
+export function normalizeSessionLabel(
+	value: string | undefined,
+): string | undefined {
 	const cleaned = value
 		? stripVTControlCharacters(value)
-			.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
-			.replace(/\s+/g, " ")
-			.trim()
+				.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+				.replace(/\s+/g, " ")
+				.trim()
 		: "";
 	if (!cleaned) return undefined;
 	return cleaned.length > 46 ? `${cleaned.slice(0, 45).trimEnd()}…` : cleaned;
@@ -560,22 +647,37 @@ function fallbackSessionDate(timestamp: string): string {
 	return `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
-export function formatSessionOrigin(origin: SessionOrigin, currentSessionId?: string): string {
-	const label = normalizeSessionLabel(origin.name)
-		?? normalizeSessionLabel(origin.description)
-		?? fallbackSessionDate(origin.createdAt);
+export function formatSessionOrigin(
+	origin: SessionOrigin,
+	currentSessionId?: string,
+): string {
+	const label =
+		normalizeSessionLabel(origin.name) ??
+		normalizeSessionLabel(origin.description) ??
+		fallbackSessionDate(origin.createdAt);
 	const shortId = origin.id.slice(0, 8) || "unknown";
 	const ephemeral = origin.persisted ? "" : " · ephemeral";
 	const current = origin.id === currentSessionId ? " · current" : "";
 	return `${label} · #${shortId}${ephemeral}${current}`;
 }
 
-export function orderTodosBySession(todos: ProjectTodo[], currentSessionId?: string): ProjectTodo[] {
-	const groups = new Map<string, { origin: SessionOrigin; todos: ProjectTodo[]; firstIndex: number }>();
+export function orderTodosBySession(
+	todos: ProjectTodo[],
+	currentSessionId?: string,
+): ProjectTodo[] {
+	const groups = new Map<
+		string,
+		{ origin: SessionOrigin; todos: ProjectTodo[]; firstIndex: number }
+	>();
 	todos.forEach((todo, index) => {
 		const existing = groups.get(todo.createdIn.id);
 		if (existing) existing.todos.push(todo);
-		else groups.set(todo.createdIn.id, { origin: todo.createdIn, todos: [todo], firstIndex: index });
+		else
+			groups.set(todo.createdIn.id, {
+				origin: todo.createdIn,
+				todos: [todo],
+				firstIndex: index,
+			});
 	});
 
 	return [...groups.values()]
@@ -583,7 +685,9 @@ export function orderTodosBySession(todos: ProjectTodo[], currentSessionId?: str
 			const leftCurrent = left.origin.id === currentSessionId ? 1 : 0;
 			const rightCurrent = right.origin.id === currentSessionId ? 1 : 0;
 			if (leftCurrent !== rightCurrent) return rightCurrent - leftCurrent;
-			const byCreated = right.origin.createdAt.localeCompare(left.origin.createdAt);
+			const byCreated = right.origin.createdAt.localeCompare(
+				left.origin.createdAt,
+			);
 			return byCreated || left.firstIndex - right.firstIndex;
 		})
 		.flatMap((group) => group.todos);

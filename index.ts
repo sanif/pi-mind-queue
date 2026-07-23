@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import {
+	copyToClipboard,
 	getAgentDir,
 	SessionManager,
 	type ExtensionAPI,
@@ -66,6 +67,16 @@ function sessionOrigin(ctx: ExtensionContext): SessionOrigin {
 
 class UndoUnavailableError extends Error {}
 class MutationUnavailableError extends Error {}
+
+class DuplicateThoughtError extends Error {
+	constructor(readonly thought: ProjectTodo) {
+		super(`Mind Queue thought is already queued as #${thought.id}`);
+	}
+}
+
+function duplicateThoughtMessage(thought: ProjectTodo): string {
+	return `Mind Queue thought is already queued as #${thought.id}`;
+}
 
 export interface MindQueueOptions {
 	agentDir?: string;
@@ -163,6 +174,7 @@ interface MindQueueToolDetails {
 
 const MIND_QUEUE_TOOL_ITEM_LIMIT = 50;
 const MIND_QUEUE_TOOL_TEXT_LIMIT = 500;
+const MIND_QUEUE_STATUS_TEXT_LIMIT = 28;
 const MIND_QUEUE_CLEANUP_PROMPT = `Review my open Mind Queue for thoughts that may already be completed or stale. First use mind_queue list with the open filter. Inspect relevant git history and current project files or features for evidence. Present only likely completed or stale thoughts with concise evidence, then ask me which specific IDs to remove. Do not call mind_queue remove until I explicitly confirm the IDs in a later message. If none look stale, tell me that instead.`;
 const MindQueueToolParameters = Type.Object({
 	action: StringEnum(["list", "add", "set_status", "remove"] as const),
@@ -203,6 +215,38 @@ function toolThoughtText(text: string): string {
 	return cleaned.length > MIND_QUEUE_TOOL_TEXT_LIMIT
 		? `${cleaned.slice(0, MIND_QUEUE_TOOL_TEXT_LIMIT - 1).trimEnd()}…`
 		: cleaned;
+}
+
+const statusSegmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
+
+/** Width-aware, ANSI-free truncation for the status bar (emoji/CJK safe). */
+function statusThoughtText(text: string): string {
+	const cleaned = sanitizeThoughtForEditor(text).replace(/\s+/g, " ").trim();
+	const segments = [...statusSegmenter.segment(cleaned)].map(
+		({ segment }) => segment,
+	);
+	const widthOf = (segment: string): number =>
+		Math.min(
+			2,
+			[...segment].reduce(
+				(width, cp) => width + ((cp.codePointAt(0) ?? 0) > 0x2fff ? 2 : 1),
+				0,
+			),
+		);
+	const total = segments.reduce(
+		(width, segment) => width + widthOf(segment),
+		0,
+	);
+	if (total <= MIND_QUEUE_STATUS_TEXT_LIMIT) return cleaned;
+	let width = 0;
+	let result = "";
+	for (const segment of segments) {
+		const segmentWidth = widthOf(segment);
+		if (width + segmentWidth > MIND_QUEUE_STATUS_TEXT_LIMIT - 1) break;
+		result += segment;
+		width += segmentWidth;
+	}
+	return `${result.trimEnd()}…`;
 }
 
 function toolItem(
@@ -336,7 +380,10 @@ export default function mindQueue(
 
 	const updateStatus = (ctx: ExtensionContext): void => {
 		const open = state?.todos.filter((todo) => !todo.done).length ?? 0;
-		const status = formatMindQueueStatus(open);
+		const focused = state?.todos.find((todo) => todo.id === state?.focusedId);
+		const status = focused
+			? `▸ ${statusThoughtText(focused.text)} · ${open}`
+			: formatMindQueueStatus(open);
 		ctx.ui.setStatus(
 			"mind-queue",
 			status ? ctx.ui.theme.fg("accent", status) : undefined,
@@ -486,6 +533,7 @@ export default function mindQueue(
 					label,
 					nextId: draft.nextId,
 					todos: cloneTodos(draft.todos),
+					focusedId: draft.focusedId,
 				};
 				if (!change(draft, origin))
 					throw new MutationUnavailableError(
@@ -496,6 +544,10 @@ export default function mindQueue(
 			applyState(nextState, ctx);
 			return true;
 		} catch (error) {
+			if (error instanceof DuplicateThoughtError) {
+				refresh(ctx);
+				return false;
+			}
 			if (error instanceof MutationUnavailableError) {
 				ctx.ui.notify(`${error.message}; queue refreshed`, "info");
 			} else {
@@ -512,9 +564,17 @@ export default function mindQueue(
 	const addThought = (
 		ctx: ExtensionContext,
 		text: string,
-	): ProjectTodo | undefined => {
+	):
+		| { outcome: "added"; thought: ProjectTodo }
+		| { outcome: "duplicate"; thought: ProjectTodo }
+		| { outcome: "failed" } => {
 		let added: ProjectTodo | undefined;
+		let duplicate: ProjectTodo | undefined;
 		const saved = mutate(ctx, "add", (draft, createdIn) => {
+			duplicate = draft.todos.find(
+				(candidate) => !candidate.done && candidate.text === text,
+			);
+			if (duplicate) throw new DuplicateThoughtError(duplicate);
 			added = {
 				id: draft.nextId++,
 				text,
@@ -525,13 +585,41 @@ export default function mindQueue(
 			draft.todos.push(added);
 			return true;
 		});
-		return saved ? added : undefined;
+		if (saved && added) return { outcome: "added", thought: added };
+		if (duplicate) return { outcome: "duplicate", thought: duplicate };
+		return { outcome: "failed" };
+	};
+
+	const setFocus = (
+		ctx: ExtensionContext,
+		thought: ProjectTodo | undefined,
+	): boolean => {
+		if (thought?.done) {
+			ctx.ui.notify(
+				`Mind Queue thought #${thought.id} is already done; focus an open thought`,
+				"warning",
+			);
+			return false;
+		}
+		const expectedFocus = state?.focusedId;
+		return mutate(ctx, thought ? "focus" : "unfocus", (draft) => {
+			if (draft.focusedId !== expectedFocus) return false;
+			if (!thought) {
+				draft.focusedId = undefined;
+				return true;
+			}
+			return mutateThoughtIfCurrent(draft, thought, (current) => {
+				draft.focusedId = current.id;
+			});
+		});
 	};
 
 	const clearCompleted = (ctx: ExtensionContext): boolean => {
 		const doneCount = state?.todos.filter((todo) => todo.done).length ?? 0;
 		if (doneCount === 0) return false;
 		return mutate(ctx, `clear ${doneCount} done`, (draft) => {
+			const focused = draft.todos.find((todo) => todo.id === draft.focusedId);
+			if (focused?.done) draft.focusedId = undefined;
 			draft.todos = draft.todos.filter((todo) => !todo.done);
 			return true;
 		});
@@ -554,6 +642,7 @@ export default function mindQueue(
 				previous = cloneUndo(draft.undo);
 				draft.todos = cloneTodos(draft.undo.todos);
 				draft.nextId = draft.undo.nextId;
+				draft.focusedId = draft.undo.focusedId;
 				draft.undo = undefined;
 			});
 			applyState(nextState, ctx);
@@ -663,10 +752,32 @@ export default function mindQueue(
 						getThoughts: () => state?.todos ?? [],
 						currentSessionId: origin.id,
 						getUndoLabel,
-						addThought: (text) => addThought(ctx, text) !== undefined,
+						addThought: (text) => {
+							const result = addThought(ctx, text);
+							if (result.outcome === "duplicate") {
+								ctx.ui.notify(duplicateThoughtMessage(result.thought), "info");
+							}
+							return result.outcome === "added";
+						},
+						copyThought: (thought) => {
+							void copyToClipboard(thought.text).then(
+								() =>
+									ctx.ui.notify(
+										`Copied Mind Queue thought #${thought.id}`,
+										"info",
+									),
+								() =>
+									ctx.ui.notify(
+										`Mind Queue could not copy thought #${thought.id}`,
+										"warning",
+									),
+							);
+						},
 						removeThought: (thought, reason) =>
 							mutate(ctx, reason, (draft) =>
 								mutateThoughtIfCurrent(draft, thought, (_current, index) => {
+									if (draft.focusedId === thought.id)
+										draft.focusedId = undefined;
 									draft.todos.splice(index, 1);
 								}),
 							),
@@ -674,8 +785,16 @@ export default function mindQueue(
 							mutate(ctx, thought.done ? "mark open" : "mark done", (draft) =>
 								mutateThoughtIfCurrent(draft, thought, (current) => {
 									current.done = !thought.done;
+									if (current.done && draft.focusedId === thought.id)
+										draft.focusedId = undefined;
 								}),
 							),
+						toggleFocus: (thought) =>
+							setFocus(
+								ctx,
+								state?.focusedId === thought.id ? undefined : thought,
+							),
+						getFocusedId: () => state?.focusedId,
 						undoLast: () => undoLast(ctx),
 						clearCompleted: () => clearCompleted(ctx),
 						shortcut,
@@ -755,8 +874,14 @@ export default function mindQueue(
 			if (params.action === "add") {
 				const text = params.text?.trim();
 				if (!text) throw new Error("Mind Queue add requires non-empty text");
-				const added = addThought(ctx, text);
-				if (!added) throw new Error("Mind Queue could not add the thought");
+				const result = addThought(ctx, text);
+				if (result.outcome === "duplicate") {
+					throw new Error(duplicateThoughtMessage(result.thought));
+				}
+				if (result.outcome !== "added") {
+					throw new Error("Mind Queue could not add the thought");
+				}
+				const added = result.thought;
 				const item = toolItem(added, currentOrigin.id);
 				return mutationToolResult({
 					action: "add",
@@ -782,6 +907,7 @@ export default function mindQueue(
 				const expected = { ...thought, createdIn: { ...thought.createdIn } };
 				const changed = mutate(ctx, "remove stale", (draft) =>
 					mutateThoughtIfCurrent(draft, expected, (_current, index) => {
+						if (draft.focusedId === expected.id) draft.focusedId = undefined;
 						draft.todos.splice(index, 1);
 					}),
 				);
@@ -814,6 +940,8 @@ export default function mindQueue(
 				const changed = mutate(ctx, `mark ${params.status}`, (draft) =>
 					mutateThoughtIfCurrent(draft, expected, (current) => {
 						current.done = targetDone;
+						if (targetDone && draft.focusedId === expected.id)
+							draft.focusedId = undefined;
 					}),
 				);
 				if (!changed) {
@@ -877,9 +1005,47 @@ export default function mindQueue(
 		}
 	};
 
+	const runFocus = async (
+		ctx: ExtensionContext,
+		idText: string | undefined,
+	): Promise<void> => {
+		if (!(await ensureInitialized(ctx)) || !refresh(ctx)) return;
+		currentContext = ctx;
+		syncCurrentOrigin(ctx);
+
+		if (idText === undefined) {
+			const focused = state?.todos.find((todo) => todo.id === state?.focusedId);
+			if (!focused) {
+				ctx.ui.notify("No thought is focused", "info");
+				return;
+			}
+			if (setFocus(ctx, undefined)) {
+				ctx.ui.notify("Cleared the focused thought", "info");
+			}
+			return;
+		}
+
+		const id = Number(idText);
+		if (!Number.isInteger(id) || id <= 0) {
+			ctx.ui.notify(
+				"Mind Queue focus requires a positive thought ID",
+				"warning",
+			);
+			return;
+		}
+		const thought = state?.todos.find((candidate) => candidate.id === id);
+		if (!thought) {
+			ctx.ui.notify(`Mind Queue thought #${id} was not found`, "warning");
+			return;
+		}
+		if (setFocus(ctx, thought)) {
+			ctx.ui.notify(`Focused thought #${id} · /mind focus to clear`, "info");
+		}
+	};
+
 	pi.registerCommand("mind", {
 		description:
-			"Open Mind Queue, add a thought, or run /mind cleanup, /mind clear-done, or /mind undo",
+			"Open Mind Queue, add a thought, or run /mind cleanup, /mind clear-done, /mind focus, or /mind undo",
 		handler: async (args, ctx) => {
 			const text = args.trim();
 			if (!text) {
@@ -900,11 +1066,21 @@ export default function mindQueue(
 				await runUndo(ctx);
 				return;
 			}
+			const focusMatch = /^focus(?:\s+(.+))?$/i.exec(text);
+			if (focusMatch) {
+				await runFocus(ctx, focusMatch[1]?.trim());
+				return;
+			}
 
 			if (!(await ensureInitialized(ctx)) || !refresh(ctx)) return;
 			currentContext = ctx;
 			syncCurrentOrigin(ctx);
-			if (addThought(ctx, text)) ctx.ui.notify("Added to Mind Queue", "info");
+			const result = addThought(ctx, text);
+			if (result.outcome === "added") {
+				ctx.ui.notify("Added to Mind Queue", "info");
+			} else if (result.outcome === "duplicate") {
+				ctx.ui.notify(duplicateThoughtMessage(result.thought), "info");
+			}
 		},
 	});
 
@@ -930,6 +1106,14 @@ export default function mindQueue(
 	pi.on("session_tree", (_event, ctx) => {
 		currentContext = ctx;
 		if (refresh(ctx)) syncCurrentOrigin(ctx);
+	});
+
+	// Pick up queue changes made by other Pi sessions (for example a focus
+	// set elsewhere) so this session's status bar does not go stale.
+	pi.on("agent_settled", (_event, ctx) => {
+		if (!store) return;
+		currentContext = ctx;
+		refresh(ctx);
 	});
 
 	pi.on("session_info_changed", (event, ctx) => {

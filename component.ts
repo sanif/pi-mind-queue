@@ -32,8 +32,11 @@ export interface TodoManagerOptions {
 	currentSessionId: string;
 	getUndoLabel: () => string | undefined;
 	addThought: (text: string) => boolean;
+	copyThought: (thought: ProjectTodo) => void;
 	removeThought: (thought: ProjectTodo, reason: "delete" | "move") => boolean;
 	toggleThought: (thought: ProjectTodo) => boolean;
+	toggleFocus: (thought: ProjectTodo) => boolean;
+	getFocusedId: () => number | undefined;
 	undoLast: () => void;
 	clearCompleted: () => boolean;
 	shortcut?: KeyId;
@@ -414,9 +417,14 @@ export class TodoManagerComponent implements Focusable {
 		row: (text: string, highlighted?: boolean) => string,
 	): string {
 		const pointer = active ? this.options.theme.fg("accent", "›") : " ";
-		const marker = thought.done
-			? this.options.theme.fg("success", "✓")
-			: this.options.theme.fg("dim", "○");
+		let marker: string;
+		if (thought.done) {
+			marker = this.options.theme.fg("success", "✓");
+		} else if (thought.id === this.options.getFocusedId()) {
+			marker = this.options.theme.fg("accent", "◆");
+		} else {
+			marker = this.options.theme.fg("dim", "○");
+		}
 		const safeText = sanitizeThoughtForDisplay(thought.text);
 		const label = thought.done
 			? this.options.theme.fg(
@@ -505,7 +513,9 @@ export class TodoManagerComponent implements Focusable {
 		const selected = thoughts[this.selected];
 		if (!selected) return;
 
-		if (data === "v" || data === "V") {
+		if (data === "y" || data === "Y") {
+			this.options.copyThought(selected);
+		} else if (data === "v" || data === "V") {
 			this.mode = "view";
 			this.viewScroll = 0;
 		} else if ((data === "u" || data === "U") && this.options.getUndoLabel()) {
@@ -527,6 +537,8 @@ export class TodoManagerComponent implements Focusable {
 			return;
 		} else if (data === "d" || data === "D" || matchesKey(data, Key.delete)) {
 			if (this.options.removeThought(selected, "delete")) this.clampSelection();
+		} else if (data === "f" || data === "F") {
+			this.options.toggleFocus(selected);
 		} else if (data === "x" || data === "X" || matchesKey(data, Key.space)) {
 			this.options.toggleThought(selected);
 		}
@@ -698,9 +710,13 @@ export class TodoManagerComponent implements Focusable {
 				const status = thought.done
 					? this.options.theme.fg("success", "✓ Done")
 					: this.options.theme.fg("accent", "○ Open");
+				const focusStatus =
+					thought.id === this.options.getFocusedId()
+						? ` ${this.options.theme.fg("dim", "·")} ${this.options.theme.fg("accent", "◆ Focused")}`
+						: "";
 				lines.push(
 					row(
-						` ${this.options.theme.fg("accent", this.options.theme.bold(`#${thought.id}`))} ${this.options.theme.fg("dim", "·")} ${status}`,
+						` ${this.options.theme.fg("accent", this.options.theme.bold(`#${thought.id}`))} ${this.options.theme.fg("dim", "·")} ${status}${focusStatus}`,
 					),
 				);
 				const age = formatThoughtAgeLong(thought.createdAt);
@@ -801,17 +817,17 @@ export class TodoManagerComponent implements Focusable {
 		if (this.mode === "list") {
 			lines.push(
 				row(
-					` ${hint("A", "add")} · ${hint("/", "filter")} · ${hint("E", "edit")} · ${hint("V", "view full")} · ${hint("Enter", "move to editor")}`,
+					` ${hint("A", "add")} · ${hint("/", "filter")} · ${hint("Y", "copy")} · ${hint("V", "view full")} · ${hint("Enter", "move")}`,
 				),
 			);
 			lines.push(
 				row(
-					` ${hint("↑↓/jk", "select")} · ${hint("X/Space", "done")} · ${hint("C", "clear done")} · ${hint("D", "remove")} · ${hint("U", "undo")}`,
+					` ${hint("↑↓/jk", "select")} · ${hint("X/Space", "done")} · ${hint("F", "focus")} · ${hint("C", "clear")} · ${hint("D", "remove")} · ${hint("U", "undo")}`,
 				),
 			);
 			lines.push(
 				row(
-					` ${hint(formatShortcut(this.options.shortcut ?? MIND_QUEUE_SHORTCUT), "close")} · ${hint("Esc", "close")} · ${this.options.theme.fg("dim", "/mind")}`,
+					` ${hint("E", "edit")} · ${hint(formatShortcut(this.options.shortcut ?? MIND_QUEUE_SHORTCUT), "close")} · ${hint("Esc", "close")} · ${this.options.theme.fg("dim", "/mind")}`,
 				),
 			);
 			if (filterQuery) {
