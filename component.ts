@@ -32,6 +32,7 @@ export interface TodoManagerOptions {
 	currentSessionId: string;
 	getUndoLabel: () => string | undefined;
 	addThought: (text: string) => boolean;
+	captureEditorThought: () => boolean;
 	copyThought: (thought: ProjectTodo) => void;
 	removeThought: (thought: ProjectTodo, reason: "delete" | "move") => boolean;
 	toggleThought: (thought: ProjectTodo) => boolean;
@@ -508,6 +509,17 @@ export class TodoManagerComponent implements Focusable {
 			this.options.requestRender();
 			return;
 		}
+		if (data === "p" || data === "P") {
+			if (this.options.captureEditorThought()) {
+				const newestId = this.options.getThoughts().at(-1)?.id;
+				this.selected = Math.max(
+					0,
+					this.thoughts().findIndex((thought) => thought.id === newestId),
+				);
+			}
+			this.options.requestRender();
+			return;
+		}
 
 		const thoughts = this.thoughts();
 		const selected = thoughts[this.selected];
@@ -827,7 +839,7 @@ export class TodoManagerComponent implements Focusable {
 			);
 			lines.push(
 				row(
-					` ${hint("E", "edit")} · ${hint(formatShortcut(this.options.shortcut ?? MIND_QUEUE_SHORTCUT), "close")} · ${hint("Esc", "close")} · ${this.options.theme.fg("dim", "/mind")}`,
+					` ${hint("E", "edit")} · ${hint("P", "save editor draft")} · ${hint(formatShortcut(this.options.shortcut ?? MIND_QUEUE_SHORTCUT), "close")} · ${hint("Esc", "close")} · ${this.options.theme.fg("dim", "/mind")}`,
 				),
 			);
 			if (filterQuery) {

@@ -759,6 +759,26 @@ export default function mindQueue(
 							}
 							return result.outcome === "added";
 						},
+						captureEditorThought: () => {
+							const text = ctx.ui.getEditorText().trim();
+							if (!text) {
+								ctx.ui.notify("Pi editor is empty", "info");
+								return false;
+							}
+							const result = addThought(ctx, text);
+							if (result.outcome === "added") {
+								ctx.ui.setEditorText("");
+								ctx.ui.notify(
+									`Saved editor draft as Mind Queue thought #${result.thought.id}`,
+									"info",
+								);
+								return true;
+							}
+							if (result.outcome === "duplicate") {
+								ctx.ui.notify(duplicateThoughtMessage(result.thought), "info");
+							}
+							return false;
+						},
 						copyThought: (thought) => {
 							void copyToClipboard(thought.text).then(
 								() =>

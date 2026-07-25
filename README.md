@@ -64,6 +64,7 @@ change the normal Pi editor outside the overlay.
 | Add a thought or drop local files/images | `A` |
 | Filter thoughts by text | `/` |
 | Edit in Pi's multiline editor | `E` |
+| Save the current Pi editor draft to Mind Queue | `P` |
 | Copy the selected thought | `Y` |
 | View the complete thought | `V` |
 | Move the thought to Pi's editor | `Enter` |
@@ -79,6 +80,10 @@ change the normal Pi editor outside the overlay.
 It does not interrupt the agent or send the command to the model; it only
 updates the local project queue. If the same text is already open, Mind Queue
 keeps the existing thought and tells you its ID instead of creating a duplicate.
+
+Press `P` while the overlay is open to save the current Pi editor draft as a
+new thought. Mind Queue clears the editor only after the thought is saved;
+empty or duplicate drafts remain in the editor.
 
 Each thought row shows its `#id` and age (for example `3d` or `2w`)
 right-aligned, so they stay visible even when the text is long. The IDs match

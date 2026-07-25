@@ -71,6 +71,7 @@ function createComponent(
 		currentSessionId: currentSession.id,
 		getUndoLabel: () => undefined,
 		addThought: () => true,
+		captureEditorThought: () => true,
 		copyThought: () => {},
 		removeThought: () => true,
 		toggleThought: () => true,
@@ -277,6 +278,21 @@ describe("Mind Queue full thought view", () => {
 		component.handleInput("X");
 
 		expect(toggles).toBe(1);
+	});
+
+	test("P saves the current editor draft through the option", () => {
+		let captures = 0;
+		const { component } = createComponent("ignored", [], {
+			captureEditorThought: () => {
+				captures += 1;
+				return true;
+			},
+		});
+
+		component.handleInput("P");
+
+		expect(captures).toBe(1);
+		expect(component.render(88).join("\n")).toContain("P save editor draft");
 	});
 
 	test("Y copies the selected thought through the option", () => {
