@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import {
@@ -14,6 +14,8 @@ import {
 	formatMindQueueStatus,
 	MIND_QUEUE_SHORTCUT,
 	sanitizeThoughtForEditor,
+	STALE_REMINDER_INTERVAL_MS,
+	staleThoughtReminder,
 	TodoManagerComponent,
 	type DialogResult,
 } from "./component";
@@ -1109,9 +1111,33 @@ export default function mindQueue(
 		handler: (_args, ctx) => runUndo(ctx),
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	/**
+	 * One quiet note at Pi startup when open thoughts have gone stale, at most
+	 * once per interval per project. The marker sits beside the private store.
+	 */
+	const remindAboutStaleThoughts = (ctx: ExtensionContext): void => {
+		if (!ctx.hasUI || !store || !state) return;
+		const message = staleThoughtReminder(state.todos);
+		if (!message) return;
+		const marker = `${store.filePath}.reminded`;
+		try {
+			if (Date.now() - statSync(marker).mtimeMs < STALE_REMINDER_INTERVAL_MS)
+				return;
+		} catch {
+			// No marker yet: remind now.
+		}
+		ctx.ui.notify(message, "info");
+		try {
+			writeFileSync(marker, new Date().toISOString(), { mode: 0o600 });
+		} catch {
+			// A missed marker only means one extra reminder.
+		}
+	};
+
+	pi.on("session_start", async (event, ctx) => {
 		try {
 			await initialize(ctx);
+			if (event.reason === "startup") remindAboutStaleThoughts(ctx);
 		} catch (error) {
 			store = undefined;
 			state = undefined;

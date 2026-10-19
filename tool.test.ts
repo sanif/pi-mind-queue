@@ -563,3 +563,51 @@ describe("Mind Queue agent tool", () => {
 		});
 	});
 });
+
+describe("Mind Queue stale reminder", () => {
+	const addOldThought = (store: MindQueueStore, daysAgo: number, done = false) =>
+		store.update((draft) => {
+			draft.todos.push({
+				id: draft.nextId++,
+				text: `Thought from ${daysAgo} days ago`,
+				done,
+				createdAt: new Date(Date.now() - daysAgo * 86_400_000).toISOString(),
+				createdIn: {
+					id: "older-session",
+					createdAt: "2026-01-01T00:00:00.000Z",
+					persisted: true,
+				},
+			});
+		});
+	const reminders = (notifications: string[]) =>
+		notifications.filter((message) => message.includes("over 2 weeks old"));
+
+	test("reminds once at Pi startup about stale open thoughts", async () => {
+		const { store, ctx, notifications, eventHandlers } = setupTool();
+		addOldThought(store, 40);
+		const start = eventHandlers.get("session_start");
+		const uiContext = { ...ctx, hasUI: true };
+
+		await start?.({ type: "session_start", reason: "reload" }, uiContext);
+		expect(reminders(notifications)).toHaveLength(0);
+
+		await start?.({ type: "session_start", reason: "startup" }, uiContext);
+		await start?.({ type: "session_start", reason: "startup" }, uiContext);
+		expect(reminders(notifications)).toEqual([
+			"Mind Queue: 1 open thought is over 2 weeks old (oldest 40d) · /mind cleanup to review",
+		]);
+	});
+
+	test("stays quiet without a UI, or when only fresh or done thoughts exist", async () => {
+		const { store, ctx, notifications, eventHandlers } = setupTool();
+		addOldThought(store, 3);
+		addOldThought(store, 60, true);
+		const start = eventHandlers.get("session_start");
+
+		await start?.({ type: "session_start", reason: "startup" }, { ...ctx, hasUI: true });
+		addOldThought(store, 30);
+		await start?.({ type: "session_start", reason: "startup" }, ctx);
+
+		expect(reminders(notifications)).toHaveLength(0);
+	});
+});

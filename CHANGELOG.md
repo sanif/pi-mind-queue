@@ -7,6 +7,26 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-19
+
+### Added
+
+- The selected thought wraps onto up to three lines, so long thoughts can be
+  read without opening the detail view.
+- Completed thoughts are hidden behind a "done hidden" row; press `H` to show
+  or hide them. The open/done counts still include them.
+- Press `?` in the queue to see every key.
+- Ages of open thoughts turn amber after two weeks and red after a month.
+- When Pi starts, a short note mentions open thoughts older than two weeks and
+  suggests `/mind cleanup`, at most once a day per project.
+
+### Changed
+
+- Thoughts are grouped by age (Today, Yesterday, Last 7 days, Last 30 days,
+  Older), newest first, instead of by the session that created them. The
+  detail view still shows the creating session.
+- The key hints below the queue are one line instead of three.
+
 ## [0.8.0] - 2026-07-23
 
 ### Added
@@ -86,7 +106,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Session labels, legacy queue migration, stale-update protection, private file
   permissions, process locking, and atomic writes.
 
-[Unreleased]: https://github.com/sanif/pi-mind-queue/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/sanif/pi-mind-queue/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/sanif/pi-mind-queue/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/sanif/pi-mind-queue/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/sanif/pi-mind-queue/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/sanif/pi-mind-queue/compare/v0.5.0...v0.6.0

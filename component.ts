@@ -13,11 +13,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import {
-	formatSessionOrigin,
-	orderTodosBySession,
-	type ProjectTodo,
-} from "./store";
+import { formatSessionOrigin, type ProjectTodo } from "./store";
 
 export type DialogResult =
 	| { action: "edit"; thought: ProjectTodo }
@@ -41,6 +37,8 @@ export interface TodoManagerOptions {
 	undoLast: () => void;
 	clearCompleted: () => boolean;
 	shortcut?: KeyId;
+	/** Clock for ages and headings; tests pin it. */
+	now?: () => Date;
 	done: (result: DialogResult) => void;
 }
 
@@ -94,6 +92,60 @@ export function formatThoughtAge(
 	return `${Math.floor(days / 365)}y`;
 }
 
+/** Open thoughts at least this old show an amber age and count as stale. */
+export const STALE_THOUGHT_DAYS = 14;
+/** Open thoughts at least this old show a red age. */
+export const VERY_STALE_THOUGHT_DAYS = 30;
+const DAY_MS = 86_400_000;
+
+/** Whole days since a thought was created, or undefined for a bad date. */
+export function thoughtAgeDays(
+	createdAt: string,
+	now: Date = new Date(),
+): number | undefined {
+	const created = new Date(createdAt).getTime();
+	if (Number.isNaN(created)) return undefined;
+	return Math.max(0, Math.floor((now.getTime() - created) / DAY_MS));
+}
+
+/** Queue heading for a thought, by local calendar day. */
+export function thoughtAgeGroup(
+	createdAt: string,
+	now: Date = new Date(),
+): string {
+	const created = new Date(createdAt).getTime();
+	if (Number.isNaN(created)) return "Undated";
+	const today = new Date(
+		now.getFullYear(),
+		now.getMonth(),
+		now.getDate(),
+	).getTime();
+	if (created >= today) return "Today";
+	if (created >= today - DAY_MS) return "Yesterday";
+	if (created >= today - 6 * DAY_MS) return "Last 7 days";
+	if (created >= today - 29 * DAY_MS) return "Last 30 days";
+	return "Older";
+}
+
+/** Startup reminder text when open thoughts have gone stale, else undefined. */
+export function staleThoughtReminder(
+	thoughts: readonly ProjectTodo[],
+	now: Date = new Date(),
+): string | undefined {
+	const ages = thoughts
+		.filter((thought) => !thought.done)
+		.map((thought) => thoughtAgeDays(thought.createdAt, now))
+		.filter((days): days is number => days !== undefined)
+		.filter((days) => days >= STALE_THOUGHT_DAYS);
+	if (ages.length === 0) return undefined;
+	const count =
+		ages.length === 1 ? "1 open thought is" : `${ages.length} open thoughts are`;
+	return `Mind Queue: ${count} over 2 weeks old (oldest ${Math.max(...ages)}d) · /mind cleanup to review`;
+}
+
+/** Remind at most once per interval per project. */
+export const STALE_REMINDER_INTERVAL_MS = 20 * 60 * 60 * 1000;
+
 /** Format a thought's creation time as a phrase for the detail view. */
 export function formatThoughtAgeLong(
 	createdAt: string,
@@ -107,6 +159,11 @@ export function formatThoughtAgeLong(
 function snapshot(thought: ProjectTodo): ProjectTodo {
 	return { ...thought, createdIn: { ...thought.createdIn } };
 }
+
+/** Width of a row's ` › ○ ` lead. */
+const ROW_PREFIX_WIDTH = 5;
+/** Lines the selected thought may wrap onto in the list. */
+const MAX_EXPANDED_LINES = 3;
 
 const BRACKETED_PASTE_START = "\u001b[200~";
 const BRACKETED_PASTE_END = "\u001b[201~";
@@ -204,7 +261,8 @@ function formatDroppedFileReferences(
 export class TodoManagerComponent implements Focusable {
 	private _focused = false;
 	private selected = 0;
-	private mode: "list" | "add" | "view" | "filter" = "list";
+	private mode: "list" | "add" | "view" | "filter" | "help" = "list";
+	private showDone = false;
 	private viewScroll = 0;
 	private input = new Input();
 	private filterInput = new Input();
@@ -268,16 +326,50 @@ export class TodoManagerComponent implements Focusable {
 		this.filterInput.focused = this._focused && this.mode === "filter";
 	}
 
-	private thoughts(): ProjectTodo[] {
-		const ordered = orderTodosBySession(
-			this.options.getThoughts(),
-			this.options.currentSessionId,
+	private now(): Date {
+		return this.options.now?.() ?? new Date();
+	}
+
+	/** Every thought matching the filter, newest first. */
+	private matching(): ProjectTodo[] {
+		const created = (thought: ProjectTodo): number =>
+			Date.parse(thought.createdAt) || 0;
+		const ordered = [...this.options.getThoughts()].sort(
+			(left, right) => created(right) - created(left) || right.id - left.id,
 		);
 		const query = this.filterText.trim().toLowerCase();
 		if (!query) return ordered;
 		return ordered.filter((thought) =>
 			thought.text.toLowerCase().includes(query),
 		);
+	}
+
+	/** Selectable rows: open thoughts, then done ones only when shown. */
+	private thoughts(): ProjectTodo[] {
+		const matching = this.matching();
+		const open = matching.filter((thought) => !thought.done);
+		if (!this.showDone) return open;
+		return [...open, ...matching.filter((thought) => thought.done)];
+	}
+
+	private hiddenDoneCount(): number {
+		if (this.showDone) return 0;
+		return this.matching().filter((thought) => thought.done).length;
+	}
+
+	private groupLabel(thought: ProjectTodo): string {
+		return thought.done ? "Done" : thoughtAgeGroup(thought.createdAt, this.now());
+	}
+
+	private toggleShowDone(): void {
+		const selectedId = this.thoughts()[this.selected]?.id;
+		this.showDone = !this.showDone;
+		const index = this.thoughts().findIndex(
+			(thought) => thought.id === selectedId,
+		);
+		this.selected = Math.max(0, index);
+		this.clampSelection();
+		this.options.requestRender();
 	}
 
 	private clampSelection(): void {
@@ -287,76 +379,51 @@ export class TodoManagerComponent implements Focusable {
 		);
 	}
 
+	/**
+	 * Widest slice around the selection that fits `maxRows`, counting group
+	 * headings, the expanded selected row, and the "more" markers.
+	 */
 	private visibleListWindow(
 		thoughts: ProjectTodo[],
 		maxRows: number,
+		innerWidth: number,
 	): { start: number; end: number } {
+		const groups = thoughts.map((thought) => this.groupLabel(thought));
+		const height = (index: number): number => {
+			const thought = thoughts[index];
+			if (!thought || index !== this.selected) return 1;
+			return this.labelLines(thought, this.labelWidth(thought, innerWidth), true)
+				.length;
+		};
+		const rows = (start: number, end: number): number => {
+			let total = (start > 0 ? 1 : 0) + (end < thoughts.length ? 1 : 0);
+			for (let index = start; index < end; index++) {
+				total += height(index);
+				if (index === start || groups[index] !== groups[index - 1]) total += 1;
+			}
+			return total;
+		};
+
 		let start = this.selected;
 		let end = this.selected + 1;
-		let contentRows = 2;
-
 		while (true) {
-			const candidates: Array<{
-				side: "left" | "right";
-				totalRows: number;
-				contentRows: number;
-			}> = [];
-			if (start > 0) {
-				const previous = thoughts[start - 1];
-				const first = thoughts[start];
-				if (previous && first) {
-					const addedRows =
-						1 + (previous.createdIn.id === first.createdIn.id ? 0 : 1);
-					const nextContentRows = contentRows + addedRows;
-					const totalRows =
-						nextContentRows +
-						(start - 1 > 0 ? 1 : 0) +
-						(end < thoughts.length ? 1 : 0);
-					if (totalRows <= maxRows) {
-						candidates.push({
-							side: "left",
-							totalRows,
-							contentRows: nextContentRows,
-						});
-					}
-				}
-			}
-			if (end < thoughts.length) {
-				const previous = thoughts[end - 1];
-				const next = thoughts[end];
-				if (previous && next) {
-					const addedRows =
-						1 + (previous.createdIn.id === next.createdIn.id ? 0 : 1);
-					const nextContentRows = contentRows + addedRows;
-					const totalRows =
-						nextContentRows +
-						(start > 0 ? 1 : 0) +
-						(end + 1 < thoughts.length ? 1 : 0);
-					if (totalRows <= maxRows) {
-						candidates.push({
-							side: "right",
-							totalRows,
-							contentRows: nextContentRows,
-						});
-					}
-				}
-			}
-			if (candidates.length === 0) break;
-
-			candidates.sort((left, right) => {
-				if (left.totalRows !== right.totalRows)
-					return left.totalRows - right.totalRows;
-				const leftSpan = this.selected - start;
-				const rightSpan = end - this.selected - 1;
-				if (left.side === right.side) return 0;
-				return left.side === "left"
-					? leftSpan - rightSpan
-					: rightSpan - leftSpan;
-			});
-			const chosen = candidates[0];
-			if (!chosen) break;
-			contentRows = chosen.contentRows;
-			if (chosen.side === "left") start -= 1;
+			const left =
+				start > 0 && rows(start - 1, end) <= maxRows
+					? rows(start - 1, end)
+					: undefined;
+			const right =
+				end < thoughts.length && rows(start, end + 1) <= maxRows
+					? rows(start, end + 1)
+					: undefined;
+			if (left === undefined && right === undefined) break;
+			// Prefer the cheaper side; on a tie, grow the shorter side.
+			const growLeft =
+				right === undefined ||
+				(left !== undefined &&
+					(left < right ||
+						(left === right &&
+							this.selected - start <= end - this.selected - 1)));
+			if (growLeft) start -= 1;
 			else end += 1;
 		}
 
@@ -411,45 +478,91 @@ export class TodoManagerComponent implements Focusable {
 		}
 	}
 
+	/** Plain `#id · age` text, as wide as the styled version. */
+	private thoughtMeta(thought: ProjectTodo): string {
+		const age = formatThoughtAge(thought.createdAt, this.now());
+		return age ? `#${thought.id} · ${age}` : `#${thought.id}`;
+	}
+
+	/** Width left for the text after the marker prefix and the meta. */
+	private labelWidth(thought: ProjectTodo, innerWidth: number): number {
+		return Math.max(
+			1,
+			innerWidth - ROW_PREFIX_WIDTH - visibleWidth(this.thoughtMeta(thought)) - 1,
+		);
+	}
+
+	/** One truncated line, or up to three wrapped lines for the selection. */
+	private labelLines(
+		thought: ProjectTodo,
+		labelWidth: number,
+		expanded: boolean,
+	): string[] {
+		const text = sanitizeThoughtForDisplay(thought.text);
+		if (!expanded) return [truncateToWidth(text, labelWidth, "…")];
+		const wrapped = wrapTextWithAnsi(text, labelWidth);
+		if (wrapped.length <= MAX_EXPANDED_LINES) return wrapped;
+		const kept = wrapped.slice(0, MAX_EXPANDED_LINES);
+		const rest = wrapped.slice(MAX_EXPANDED_LINES - 1).join(" ");
+		kept[MAX_EXPANDED_LINES - 1] = truncateToWidth(rest, labelWidth, "…");
+		return kept;
+	}
+
 	private renderThoughtRow(
 		thought: ProjectTodo,
 		active: boolean,
 		innerWidth: number,
 		row: (text: string, highlighted?: boolean) => string,
-	): string {
-		const pointer = active ? this.options.theme.fg("accent", "›") : " ";
+		expand: boolean,
+	): string[] {
+		const theme = this.options.theme;
+		const pointer = active ? theme.fg("accent", "›") : " ";
 		let marker: string;
 		if (thought.done) {
-			marker = this.options.theme.fg("success", "✓");
+			marker = theme.fg("success", "✓");
 		} else if (thought.id === this.options.getFocusedId()) {
-			marker = this.options.theme.fg("accent", "◆");
+			marker = theme.fg("accent", "◆");
 		} else {
-			marker = this.options.theme.fg("dim", "○");
+			marker = theme.fg("dim", "○");
 		}
-		const safeText = sanitizeThoughtForDisplay(thought.text);
-		const label = thought.done
-			? this.options.theme.fg(
-					"muted",
-					this.options.theme.strikethrough(safeText),
-				)
-			: this.options.theme.fg(active ? "accent" : "text", safeText);
-		const age = formatThoughtAge(thought.createdAt);
-		const meta = age ? `#${thought.id} · ${age}` : `#${thought.id}`;
-		const prefix = ` ${pointer} ${marker} `;
-		const prefixWidth = visibleWidth(prefix);
-		const metaWidth = visibleWidth(meta);
-		const labelWidth = Math.max(1, innerWidth - prefixWidth - metaWidth - 1);
-		const truncatedLabel = truncateToWidth(label, labelWidth, "…");
-		const gap = " ".repeat(
-			Math.max(
-				1,
-				innerWidth - prefixWidth - visibleWidth(truncatedLabel) - metaWidth,
-			),
+		const style = (text: string): string =>
+			thought.done
+				? theme.fg("muted", theme.strikethrough(text))
+				: theme.fg(active ? "accent" : "text", text);
+
+		// Stale open thoughts get a warmer age so they stand out.
+		const meta = this.thoughtMeta(thought);
+		const days = thoughtAgeDays(thought.createdAt, this.now()) ?? 0;
+		let ageColor: "dim" | "warning" | "error" = "dim";
+		if (!thought.done && days >= VERY_STALE_THOUGHT_DAYS) ageColor = "error";
+		else if (!thought.done && days >= STALE_THOUGHT_DAYS) ageColor = "warning";
+		const [id = meta, age] = meta.split(" · ");
+		const styledMeta = age
+			? `${theme.fg("dim", `${id} · `)}${theme.fg(ageColor, age)}`
+			: theme.fg("dim", id);
+
+		const lines = this.labelLines(
+			thought,
+			this.labelWidth(thought, innerWidth),
+			active && expand,
 		);
-		return row(
-			`${prefix}${truncatedLabel}${gap}${this.options.theme.fg("dim", meta)}`,
-			active,
-		);
+		return lines.map((line, index) => {
+			const first = index === 0;
+			const lead = first
+				? ` ${pointer} ${marker} `
+				: " ".repeat(ROW_PREFIX_WIDTH);
+			const tailWidth = first ? visibleWidth(meta) : 0;
+			const gap = " ".repeat(
+				Math.max(
+					first ? 1 : 0,
+					innerWidth - ROW_PREFIX_WIDTH - visibleWidth(line) - tailWidth,
+				),
+			);
+			return row(
+				`${lead}${style(line)}${gap}${first ? styledMeta : ""}`,
+				active,
+			);
+		});
 	}
 
 	private handleFilterInput(data: string): void {
@@ -483,6 +596,22 @@ export class TodoManagerComponent implements Focusable {
 		this.options.requestRender();
 	}
 
+	private handleHelpInput(data: string): void {
+		if (matchesKey(data, this.options.shortcut ?? MIND_QUEUE_SHORTCUT)) {
+			this.options.done(undefined);
+			return;
+		}
+		if (
+			data === "?" ||
+			matchesKey(data, Key.escape) ||
+			matchesKey(data, Key.tab) ||
+			data === "q"
+		) {
+			this.mode = "list";
+			this.options.requestRender();
+		}
+	}
+
 	private handleListInput(data: string): void {
 		if (
 			matchesKey(data, Key.escape) ||
@@ -502,6 +631,15 @@ export class TodoManagerComponent implements Focusable {
 			this.mode = "filter";
 			this.syncInputFocus();
 			this.options.requestRender();
+			return;
+		}
+		if (data === "?") {
+			this.mode = "help";
+			this.options.requestRender();
+			return;
+		}
+		if (data === "h" || data === "H") {
+			this.toggleShowDone();
 			return;
 		}
 		if (data === "c" || data === "C") {
@@ -575,6 +713,10 @@ export class TodoManagerComponent implements Focusable {
 			this.handleViewInput(data);
 			return;
 		}
+		if (this.mode === "help") {
+			this.handleHelpInput(data);
+			return;
+		}
 		this.handleListInput(data);
 	}
 
@@ -585,8 +727,10 @@ export class TodoManagerComponent implements Focusable {
 		const innerWidth = width - 2;
 		const lines: string[] = [];
 		const thoughts = this.thoughts();
-		const openCount = thoughts.filter((thought) => !thought.done).length;
-		const doneCount = thoughts.length - openCount;
+		// Counts include done thoughts even while they are hidden.
+		const counted = this.matching();
+		const openCount = counted.filter((thought) => !thought.done).length;
+		const doneCount = counted.length - openCount;
 		const folderName = basename(this.options.cwd) || this.options.cwd;
 		this.clampSelection();
 
@@ -616,6 +760,7 @@ export class TodoManagerComponent implements Focusable {
 			view: "DETAIL",
 			list: "QUEUE",
 			filter: "FILTER",
+			help: "KEYS",
 		}[this.mode];
 		const title = ` ${this.options.theme.fg("accent", this.options.theme.bold("◆ Mind Queue"))}`;
 		const counts = this.options.theme.fg(
@@ -691,11 +836,12 @@ export class TodoManagerComponent implements Focusable {
 				const match = thoughts[index];
 				if (match)
 					lines.push(
-						this.renderThoughtRow(
+						...this.renderThoughtRow(
 							match,
 							index === this.selected,
 							innerWidth,
 							row,
+							false,
 						),
 					);
 			}
@@ -768,7 +914,37 @@ export class TodoManagerComponent implements Focusable {
 					` ${hint("↑↓/jk", "scroll")} · ${hint("V/Tab/Esc", "back to queue")}`,
 				),
 			);
+		} else if (this.mode === "help") {
+			const keys: Array<[string, string]> = [
+				["A", "add a thought, or drop files/images"],
+				["/", "filter by text"],
+				["↑↓/jk", "select"],
+				["Enter", "move to Pi's editor"],
+				["E", "edit in Pi's editor"],
+				["V", "view full thought"],
+				["Y", "copy"],
+				["P", "save editor draft"],
+				["X/Space", "mark done or open"],
+				["F", "focus in the status bar"],
+				["H", "show or hide done thoughts"],
+				["C", "clear done thoughts"],
+				["D", "remove"],
+				["U", "undo the latest change"],
+				[formatShortcut(this.options.shortcut ?? MIND_QUEUE_SHORTCUT), "close"],
+			];
+			const keyWidth = Math.max(...keys.map(([key]) => visibleWidth(key)));
+			for (const [key, label] of keys) {
+				const padding = " ".repeat(keyWidth - visibleWidth(key));
+				lines.push(row(` ${hint(`${key}${padding}`, label)}`));
+			}
+			lines.push(row());
+			lines.push(
+				row(
+					` ${this.options.theme.fg("dim", "/mind <thought> · /mind cleanup · /mind focus <id>")}`,
+				),
+			);
 		} else if (thoughts.length === 0) {
+			const hiddenDone = this.hiddenDoneCount();
 			lines.push(row());
 			if (filterQuery) {
 				lines.push(
@@ -781,6 +957,15 @@ export class TodoManagerComponent implements Focusable {
 						` ${hint("/", "edit the filter")} · ${this.options.theme.fg("dim", "Esc inside the filter clears it")}`,
 					),
 				);
+			} else if (hiddenDone > 0) {
+				lines.push(
+					row(
+						` ${this.options.theme.fg("muted", `◇ No open thoughts · ${hiddenDone} done hidden`)}`,
+					),
+				);
+				lines.push(
+					row(` ${hint("H", "show done")} · ${hint("A", "add a thought")}`),
+				);
 			} else {
 				lines.push(
 					row(` ${this.options.theme.fg("muted", "◇ Nothing queued yet")}`),
@@ -792,27 +977,36 @@ export class TodoManagerComponent implements Focusable {
 				);
 			}
 		} else {
-			const { start, end } = this.visibleListWindow(thoughts, 14);
+			const { start, end } = this.visibleListWindow(thoughts, 14, innerWidth);
+			const groupSizes = new Map<string, number>();
+			for (const thought of thoughts) {
+				const group = this.groupLabel(thought);
+				groupSizes.set(group, (groupSizes.get(group) ?? 0) + 1);
+			}
 			if (start > 0)
 				lines.push(row(` ${this.options.theme.fg("dim", `↑ ${start} more`)}`));
-			let renderedSessionId: string | undefined;
+			let renderedGroup: string | undefined;
 			for (let index = start; index < end; index++) {
 				const thought = thoughts[index];
 				if (!thought) continue;
-				if (thought.createdIn.id !== renderedSessionId) {
-					renderedSessionId = thought.createdIn.id;
+				const group = this.groupLabel(thought);
+				if (group !== renderedGroup) {
+					renderedGroup = group;
+					// The Done heading carries its own toggle; the footer stays one line.
+					const toggle = thought.done ? ` · ${hint("H", "hide")}` : "";
 					lines.push(
 						row(
-							` ${this.options.theme.fg("dim", "─")} ${this.options.theme.fg("muted", `Session · ${formatSessionOrigin(thought.createdIn, this.options.currentSessionId)}`)}`,
+							` ${this.options.theme.fg("dim", "─")} ${this.options.theme.fg("muted", `${group} · ${groupSizes.get(group) ?? 0}`)}${toggle}`,
 						),
 					);
 				}
 				lines.push(
-					this.renderThoughtRow(
+					...this.renderThoughtRow(
 						thought,
 						index === this.selected,
 						innerWidth,
 						row,
+						true,
 					),
 				);
 			}
@@ -823,23 +1017,23 @@ export class TodoManagerComponent implements Focusable {
 					),
 				);
 			}
+			const hiddenDone = this.hiddenDoneCount();
+			if (hiddenDone > 0) {
+				lines.push(
+					row(
+						` ${this.options.theme.fg("success", "✓")} ${this.options.theme.fg("dim", `${hiddenDone} done hidden ·`)} ${hint("H", "show")}`,
+					),
+				);
+			}
 		}
 
 		lines.push(divider());
-		if (this.mode === "list") {
+		if (this.mode === "help") {
+			lines.push(row(` ${hint("?/Esc", "back to queue")}`));
+		} else if (this.mode === "list") {
 			lines.push(
 				row(
-					` ${hint("A", "add")} · ${hint("/", "filter")} · ${hint("Y", "copy")} · ${hint("V", "view full")} · ${hint("Enter", "move")}`,
-				),
-			);
-			lines.push(
-				row(
-					` ${hint("↑↓/jk", "select")} · ${hint("X/Space", "done")} · ${hint("F", "focus")} · ${hint("C", "clear")} · ${hint("D", "remove")} · ${hint("U", "undo")}`,
-				),
-			);
-			lines.push(
-				row(
-					` ${hint("E", "edit")} · ${hint("P", "save editor draft")} · ${hint(formatShortcut(this.options.shortcut ?? MIND_QUEUE_SHORTCUT), "close")} · ${hint("Esc", "close")} · ${this.options.theme.fg("dim", "/mind")}`,
+					` ${hint("A", "add")} · ${hint("X", "done")} · ${hint("Enter", "move")} · ${hint("V", "view")} · ${hint("/", "filter")} · ${hint("?", "all keys")}`,
 				),
 			);
 			if (filterQuery) {
@@ -853,7 +1047,7 @@ export class TodoManagerComponent implements Focusable {
 			if (undoLabel) {
 				lines.push(
 					row(
-						` ${this.options.theme.fg("warning", `Undo available: ${undoLabel}`)}`,
+						` ${this.options.theme.fg("warning", "U")} ${this.options.theme.fg("warning", `undo ${undoLabel}`)}`,
 					),
 				);
 			}

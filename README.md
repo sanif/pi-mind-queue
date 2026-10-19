@@ -57,7 +57,8 @@ closes its overlay, and appears in the overlay hint. `/mind` remains available.
 ### While Mind Queue is open
 
 These keys are handled only while the Mind Queue overlay is open. They do not
-change the normal Pi editor outside the overlay.
+change the normal Pi editor outside the overlay. The overlay shows the most
+used keys on one line; press `?` to see them all.
 
 | Action | Key |
 | --- | --- |
@@ -70,11 +71,20 @@ change the normal Pi editor outside the overlay.
 | Move the thought to Pi's editor | `Enter` |
 | Mark open or done | `X` or `Space` |
 | Focus in the status bar | `F` |
+| Show or hide completed thoughts | `H` |
 | Clear all completed thoughts | `C` |
 | Remove | `D` or `Delete` |
 | Undo this session's latest change | `U` |
 | Move selection | arrow keys or `J`/`K` |
+| Show every key | `?` |
 | Close | `Esc` or the configured shortcut |
+
+Thoughts are grouped by age (Today, Yesterday, Last 7 days, Last 30 days,
+Older), newest first. The selected thought wraps onto up to three lines.
+Completed thoughts are hidden behind a single row until you press `H`. The age
+of an open thought turns amber after two weeks and red after a month, and when
+Pi starts it mentions open thoughts older than two weeks, at most once a day
+per project.
 
 `/mind <thought>` saves immediately, including while the agent is working.
 It does not interrupt the agent or send the command to the model; it only
